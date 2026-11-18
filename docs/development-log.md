@@ -235,3 +235,10 @@
 - 处理：使用同一`DroidSansFallbackFull.ttf`重新生成16 px、1 bpp、未压缩字体，覆盖空格及`U+4E00-U+9FFF`；设置`bitmap_format=0`和LVGL 9.3+的`static_bitmap=1`，彻底移除运行时RLE解压依赖。ASCII继续通过`lv_font_montserrat_14` fallback提供。
 - 取舍：1 bpp没有2 bpp抗锯齿灰阶，但字形路径更直接、运行时开销更低，生成源码从约9.5 MB降至5.9 MB。固件从`0x28aa60`缩小到`0x1fed10`，3 MiB factory余量由15%提高到33%，因此保持现有分区表和Flash storage容量不变。
 - 验证：host CTest 7/7通过；ESP32-S31交叉构建通过；`/dev/ttyUSB0`烧录并通过Flash Hash校验。实板启动确认`Chinese=OK ASCII=OK Bitmap=OK`、364项目录正常、北通`0x81`端点仍为`ESP_OK`，无panic/assert。串口无法验证屏幕最终观感，未压缩字体版的中文显示仍需用户目视确认。
+
+### 2026-11-18 S31 构建环境可复现信息入库
+
+- 目标：不提交约727 MB的ESP-IDF源码或约979 MB的RISC-V工具链二进制，只在仓库保存另一台电脑恢复构建环境所需的精确信息。
+- 记录：新增`docs/s31-build-environment.md`，固定ESP-IDF仓库、`827cc622` commit、S31蓝牙子模块commit、Python/CMake/Ninja版本、`riscv32-esp-elf` 16.1.0版本、关键S31文件路径和SHA-256，以及已成功的S31构建命令。
+- 依赖：将`dependencies.lock`纳入版本控制，以固定BSP 1.0.2、LVGL 9.6.0~1、USB/HID和音频组件版本及组件哈希；`sdkconfig`继续忽略，由`defaults`在目标机器重新生成。
+- 取舍：文档明确该游戏工程绑定S31硬件，ESP32-S3/C3应使用独立示例工程做IDF target烟雾测试，不能把本工程跨target构建失败误判为IDF环境失败。

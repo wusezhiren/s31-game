@@ -2,7 +2,6 @@ build-host/
 build-s31/
 sdkconfig
 managed_components/
-dependencies.lock
 .orca/
 __pycache__/
 *.pyc
