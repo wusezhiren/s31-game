@@ -121,9 +121,12 @@ size_t s31_game_catalog_page_move(size_t selected, size_t count, int direction)
 {
     if (!count) return 0;
     size_t page = selected / 10u;
-    if (direction < 0) return page ? (page - 1u) * 10u : 0;
+    size_t page_count = (count + 9u) / 10u;
+    if (direction < 0) {
+        return page ? (page - 1u) * 10u : (page_count - 1u) * 10u;
+    }
     size_t next = (page + 1u) * 10u;
-    return next < count ? next : selected;
+    return next < count ? next : 0;
 }
 
 uint32_t s31_game_catalog_repeat(s31_game_nav_repeat_t *state, uint32_t buttons,

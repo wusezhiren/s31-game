@@ -131,6 +131,10 @@ static void upload_task(void *argument)
             if (serial_command) serial_command("STOP", NULL, upload_context);
             continue;
         }
+        if (!strncmp(line, "S31TOUCH ", 9)) {
+            if (serial_command) serial_command("TOUCH", line + 9, upload_context);
+            continue;
+        }
         if (strncmp(line, "S31PUT ", 7) != 0) continue;
 
         unsigned long size = 0;

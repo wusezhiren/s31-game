@@ -14,8 +14,9 @@ int main(void)
     assert(strcmp(s31_game_platform_icon(S31_GAME_NES), "FC") == 0);
     assert(s31_game_catalog_page_move(0, 25, 1) == 10);
     assert(s31_game_catalog_page_move(13, 25, 1) == 20);
-    assert(s31_game_catalog_page_move(24, 25, 1) == 24);
+    assert(s31_game_catalog_page_move(24, 25, 1) == 0);
     assert(s31_game_catalog_page_move(13, 25, -1) == 0);
+    assert(s31_game_catalog_page_move(0, 25, -1) == 20);
 
     s31_game_nav_repeat_t repeat = {0};
     assert(s31_game_catalog_repeat(&repeat, 1u, 1u, 1000) == 1u);

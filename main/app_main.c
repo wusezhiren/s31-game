@@ -38,6 +38,70 @@ static char serial_upload_name[96];
 static char serial_command_name[96];
 static char serial_command_action[8];
 static volatile app_mode_t mode = APP_CATALOG;
+static int start_selected_game(void);
+static volatile bool touch_event_pending;
+static volatile bool touch_down;
+static volatile int32_t touch_x, touch_y;
+static int32_t touch_start_x, touch_start_y;
+static bool touch_tracking;
+
+static void on_touch(int32_t x, int32_t y, bool down, void *context)
+{
+    (void)context;
+    if (down) {
+        if (!touch_tracking) {
+            touch_start_x = x;
+            touch_start_y = y;
+            touch_tracking = true;
+        }
+    } else if (touch_tracking) {
+        touch_x = x;
+        touch_y = y;
+        touch_down = false;
+        touch_event_pending = true;
+        touch_tracking = false;
+    }
+}
+
+static void handle_touch(void)
+{
+    if (!touch_event_pending) return;
+    touch_event_pending = false;
+    int32_t dx = touch_x - touch_start_x;
+    int32_t dy = touch_y - touch_start_y;
+    if (mode == APP_RUNNING || mode == APP_PAUSED) {
+        if (touch_start_x < 266 && abs(dy) >= 40 && abs(dy) > abs(dx)) {
+            static int volume = 20;
+            volume += dy < 0 ? 5 : -5;
+            if (volume < 0) volume = 0;
+            if (volume > 100) volume = 100;
+            s31_board_set_volume(volume);
+        } else if (touch_start_x >= 534 && abs(dy) >= 40 && abs(dy) > abs(dx)) {
+            static int brightness = 100;
+            brightness += dy < 0 ? 5 : -5;
+            if (brightness < 10) brightness = 10;
+            if (brightness > 100) brightness = 100;
+            s31_board_set_brightness(brightness);
+        }
+        return;
+    }
+    if (abs(dx) >= 40 && abs(dx) > abs(dy)) {
+        selected = s31_game_catalog_page_move(selected, catalog.count, dx < 0 ? -1 : 1);
+        ESP_LOGI(TAG, "touch page=%u selected=%u", (unsigned)(selected / 10 + 1), (unsigned)(selected + 1));
+        s31_board_show_catalog(&catalog, selected, NULL);
+    } else if (abs(dy) >= 40 && abs(dy) > abs(dx)) {
+        if (dy < 0 && selected + 1 < catalog.count) selected++;
+        if (dy > 0 && selected) selected--;
+        s31_board_show_catalog(&catalog, selected, NULL);
+    } else if (touch_start_y >= 82 && touch_start_y < 422) {
+        size_t row = (size_t)((touch_start_y - 82) / 34);
+        size_t page_start = (selected / 10u) * 10u;
+        if (page_start + row < catalog.count) {
+            selected = page_start + row;
+            start_selected_game();
+        }
+    }
+}
 
 static bool serial_upload_allowed(void *context)
 {
@@ -229,6 +293,7 @@ void app_main(void)
     s31_video_t video = {0};
     ESP_ERROR_CHECK(s31_board_init(&video));
     ESP_ERROR_CHECK(s31_board_start_input(on_key, NULL));
+    s31_board_set_touch_callback(on_touch, NULL);
     ESP_ERROR_CHECK(s31_serial_upload_start(serial_upload_allowed, serial_upload_complete,
                                              serial_command_received, NULL));
     s31_gamepad_set_callback(on_gamepad, NULL);
@@ -237,6 +302,7 @@ void app_main(void)
     refresh_catalog(NULL);
     s31_buttons_t previous = 0;
     for (;;) {
+        handle_touch();
         if (serial_command_pending) {
             serial_command_pending = false;
             if (!strcmp(serial_command_action, "STOP")) {
@@ -266,6 +332,16 @@ void app_main(void)
                         vTaskDelay(pdMS_TO_TICKS(20));
                         s31_serial_reply(response);
                     }
+                }
+            } else if (!strcmp(serial_command_action, "TOUCH")) {
+                int x0, y0, x1, y1;
+                if (sscanf(serial_command_name, "%d %d %d %d", &x0, &y0, &x1, &y1) != 4) {
+                    s31_serial_reply("TOUCH ERR FORMAT");
+                } else {
+                    on_touch(x0, y0, true, NULL);
+                    on_touch(x1, y1, false, NULL);
+                    handle_touch();
+                    s31_serial_reply("TOUCH OK");
                 }
             }
         }

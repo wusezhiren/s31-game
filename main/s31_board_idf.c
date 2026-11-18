@@ -17,6 +17,8 @@ static const char *TAG = "s31_game_board";
 static esp_codec_dev_handle_t speaker;
 static s31_board_key_cb_t key_callback;
 static void *key_context;
+static void (*touch_callback)(int32_t x, int32_t y, bool down, void *context);
+static void *touch_context;
 static lv_obj_t *nes_image;
 static uint16_t *nes_scaled_frame;
 static lv_image_dsc_t nes_image_dsc;
@@ -38,6 +40,31 @@ static lv_obj_t *catalog_badges[10];
 static lv_obj_t *catalog_names[10];
 static lv_obj_t *catalog_states[10];
 LV_FONT_DECLARE(s31_font_cjk_16);
+
+static lv_indev_read_cb_t touch_read;
+
+static void read_touch(lv_indev_t *indev, lv_indev_data_t *data)
+{
+    static bool pressed;
+    static lv_point_t last;
+    touch_read(indev, data);
+    if (!touch_callback) return;
+    if (data->state == LV_INDEV_STATE_PRESSED) {
+        /* The touch panel is mounted 180 degrees relative to the LCD. */
+        last.x = BSP_LCD_H_RES - 1 - data->point.x;
+        last.y = BSP_LCD_V_RES - 1 - data->point.y;
+        data->point = last;
+        if (!pressed) {
+            ESP_LOGI(TAG, "touch down x=%d y=%d", (int)last.x, (int)last.y);
+            touch_callback(last.x, last.y, true, touch_context);
+        }
+        pressed = true;
+    } else if (pressed) {
+        pressed = false;
+        ESP_LOGI(TAG, "touch up x=%d y=%d", (int)last.x, (int)last.y);
+        touch_callback(last.x, last.y, false, touch_context);
+    }
+}
 
 static void use_catalog_font(lv_obj_t *label)
 {
@@ -207,6 +234,13 @@ esp_err_t s31_board_init(s31_video_t *video)
     lv_obj_align(catalog_label, LV_ALIGN_TOP_LEFT, 18, 14);
     lv_obj_set_style_text_color(catalog_label, lv_color_white(), 0);
     lv_obj_set_hidden(catalog_label, true);
+    lv_indev_t *touch_indev = bsp_display_get_input_dev();
+    if (touch_indev && (touch_read = lv_indev_get_read_cb(touch_indev))) {
+        lv_indev_set_read_cb(touch_indev, read_touch);
+        ESP_LOGI(TAG, "touch sample reader installed");
+    } else {
+        ESP_LOGW(TAG, "touch input device unavailable");
+    }
 
     catalog_root = lv_obj_create(screen);
     lv_obj_remove_style_all(catalog_root);
@@ -281,7 +315,7 @@ esp_err_t s31_board_init(s31_video_t *video)
         .bits_per_sample = 16, .channel = 2, .sample_rate = S31_AUDIO_RATE,
     };
     ESP_RETURN_ON_ERROR(esp_codec_dev_open(speaker, &sample), TAG, "ES8389 open failed");
-    ESP_RETURN_ON_ERROR(esp_codec_dev_set_out_vol(speaker, 80), TAG, "speaker volume failed");
+    ESP_RETURN_ON_ERROR(esp_codec_dev_set_out_vol(speaker, 20), TAG, "speaker volume failed");
     ESP_RETURN_ON_ERROR(bsp_audio_poweramp_enable(true), TAG, "power amplifier failed");
 
     esp_err_t sd_err = mount_sd();
@@ -299,10 +333,32 @@ esp_err_t s31_board_start_input(s31_board_key_cb_t callback, void *context)
                ? ESP_OK : ESP_ERR_NO_MEM;
 }
 
+void s31_board_set_touch_callback(void (*callback)(int32_t x, int32_t y, bool down, void *context),
+                                  void *context)
+{
+    touch_callback = callback;
+    touch_context = context;
+}
+
 esp_err_t s31_board_audio_write(const int16_t *samples, size_t bytes)
 {
     if (!speaker || !samples || !bytes) return ESP_ERR_INVALID_ARG;
     return esp_codec_dev_write(speaker, (void *)samples, bytes);
+}
+
+esp_err_t s31_board_set_volume(int volume)
+{
+    if (!speaker) return ESP_ERR_INVALID_STATE;
+    if (volume < 0) volume = 0;
+    if (volume > 100) volume = 100;
+    return esp_codec_dev_set_out_vol(speaker, volume);
+}
+
+esp_err_t s31_board_set_brightness(int brightness)
+{
+    if (brightness < 10) brightness = 10;
+    if (brightness > 100) brightness = 100;
+    return bsp_display_brightness_set(brightness);
 }
 
 const char *s31_board_rom_root(void) { return "/sdcard/roms"; }

@@ -9,7 +9,10 @@ typedef void (*s31_board_key_cb_t)(int key, bool down, void *context);
 
 esp_err_t s31_board_init(s31_video_t *video);
 esp_err_t s31_board_start_input(s31_board_key_cb_t callback, void *context);
+void s31_board_set_touch_callback(void (*callback)(int32_t x, int32_t y, bool down, void *context), void *context);
 esp_err_t s31_board_audio_write(const int16_t *samples, size_t bytes);
+esp_err_t s31_board_set_volume(int volume);
+esp_err_t s31_board_set_brightness(int brightness);
 const char *s31_board_rom_root(void);
 int s31_board_present_nes(const uint16_t *pixels, uint16_t width, uint16_t height);
 int s31_board_present_gb(const uint16_t *pixels, uint16_t width, uint16_t height);
