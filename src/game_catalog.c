@@ -48,7 +48,6 @@ static void scan_dir(const char *root, s31_game_catalog_t *catalog, unsigned dep
         s31_game_entry_t *item = &catalog->entries[catalog->count++];
         memset(item, 0, sizeof(*item));
         strncpy(item->path, path, sizeof(item->path) - 1);
-        strncpy(item->title, entry->d_name, sizeof(item->title) - 1);
 #ifdef ESP_PLATFORM
         static bool logged_utf8_name;
         if (!logged_utf8_name) {
@@ -61,6 +60,25 @@ static void scan_dir(const char *root, s31_game_catalog_t *catalog, unsigned dep
             }
         }
 #endif
+        /*
+         * Directory entries are UTF-8 on the FAT VFS.  A plain strncpy can
+         * cut a three-byte Chinese character in half when a long filename is
+         * copied into title[128].  LVGL then sees an invalid UTF-8 sequence
+         * and the game name is rendered as missing text.  Keep the copy
+         * bounded, but only terminate at a complete UTF-8 code point.
+         */
+        size_t title_limit = sizeof(item->title) - 1;
+        size_t title_len = 0;
+        while (entry->d_name[title_len] && title_len < title_limit) {
+            unsigned char first = (unsigned char)entry->d_name[title_len];
+            size_t codepoint_len = first < 0x80 ? 1u :
+                                   (first < 0xe0 ? 2u :
+                                    (first < 0xf0 ? 3u : 4u));
+            if (title_len + codepoint_len > title_limit) break;
+            title_len += codepoint_len;
+        }
+        memcpy(item->title, entry->d_name, title_len);
+        item->title[title_len] = '\0';
         item->platform = platform;
         item->size = (size_t)st.st_size;
         item->supported = platform == S31_GAME_GB || platform == S31_GAME_GBC ||
