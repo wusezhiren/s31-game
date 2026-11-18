@@ -242,3 +242,10 @@
 - 记录：新增`docs/s31-build-environment.md`，固定ESP-IDF仓库、`827cc622` commit、S31蓝牙子模块commit、Python/CMake/Ninja版本、`riscv32-esp-elf` 16.1.0版本、关键S31文件路径和SHA-256，以及已成功的S31构建命令。
 - 依赖：将`dependencies.lock`纳入版本控制，以固定BSP 1.0.2、LVGL 9.6.0~1、USB/HID和音频组件版本及组件哈希；`sdkconfig`继续忽略，由`defaults`在目标机器重新生成。
 - 取舍：文档明确该游戏工程绑定S31硬件，ESP32-S3/C3应使用独立示例工程做IDF target烟雾测试，不能把本工程跨target构建失败误判为IDF环境失败。
+
+### 2026-11-18 SD 卡中文游戏文件名编码修复
+
+- 现象：界面标题、状态和操作提示等系统中文可以正常显示，但从SD卡扫描得到的中文游戏名称不能显示，因此问题不在LVGL字体或中文绘制链路。
+- 根因：ESP-IDF FatFs默认配置为CP437代码页和ANSI/OEM API。FAT长文件名在磁盘上使用Unicode，但`readdir()`返回给应用的名称不是UTF-8；目录代码直接将`d_name`传给UTF-8模式的LVGL，导致中文文件名无法解码。
+- 修复：在通用和S31默认配置中启用FatFs heap长文件名、CP936代码页和UTF-8 API：`CONFIG_FATFS_LFN_HEAP=y`、`CONFIG_FATFS_CODEPAGE_936=y`、`CONFIG_FATFS_API_ENCODING_UTF_8=y`。目录扫描在实板上首次遇到非ASCII名称时输出`UTF-8 filename from FAT`诊断，便于确认转换结果。
+- 验证：host CTest 7/7通过；ESP32-S31交叉构建通过，app大小`0x229750`，3 MiB factory余量28%。由于`/dev/ttyUSB0`当时持续返回`EIO`，本轮尚未烧录，SD中文文件名显示和诊断日志仍需实板确认。

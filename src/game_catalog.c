@@ -5,6 +5,9 @@
 #include <dirent.h>
 #include <stdio.h>
 #include <sys/stat.h>
+#ifdef ESP_PLATFORM
+#include "esp_log.h"
+#endif
 const char *s31_game_platform_name(s31_game_platform_t p) { static const char *v[]={"Unknown","NES","GB","GBC","SMS","Game Gear","SG-1000","PCE","GBA","Arcade"}; return p<=S31_GAME_ARCADE?v[p]:v[0]; }
 const char *s31_game_platform_icon(s31_game_platform_t p) { static const char *v[]={"?","FC","GB","GBC","SMS","GG","SG","PCE","GBA","ARCADE"}; return p<=S31_GAME_ARCADE?v[p]:v[0]; }
 bool s31_game_nes_mapper_supported(uint16_t mapper)
@@ -46,6 +49,18 @@ static void scan_dir(const char *root, s31_game_catalog_t *catalog, unsigned dep
         memset(item, 0, sizeof(*item));
         strncpy(item->path, path, sizeof(item->path) - 1);
         strncpy(item->title, entry->d_name, sizeof(item->title) - 1);
+#ifdef ESP_PLATFORM
+        static bool logged_utf8_name;
+        if (!logged_utf8_name) {
+            for (const unsigned char *p = (const unsigned char *)entry->d_name; *p; ++p) {
+                if (*p >= 0x80) {
+                    ESP_LOGI("s31_catalog", "UTF-8 filename from FAT: %s", entry->d_name);
+                    logged_utf8_name = true;
+                    break;
+                }
+            }
+        }
+#endif
         item->platform = platform;
         item->size = (size_t)st.st_size;
         item->supported = platform == S31_GAME_GB || platform == S31_GAME_GBC ||
