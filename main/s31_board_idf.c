@@ -42,6 +42,24 @@ static lv_obj_t *catalog_states[10];
 LV_FONT_DECLARE(s31_font_cjk_16);
 
 static lv_indev_read_cb_t touch_read;
+static lv_obj_t *level_label;
+static lv_timer_t *level_timer;
+
+static void hide_level(lv_timer_t *timer)
+{
+    lv_obj_set_hidden(level_label, true);
+    lv_timer_pause(timer);
+}
+
+static void show_level(const char *name, int level)
+{
+    if (!level_label || !level_timer || !bsp_display_lock(100)) return;
+    lv_label_set_text_fmt(level_label, "%s %d%%", name, level);
+    lv_obj_set_hidden(level_label, false);
+    lv_timer_reset(level_timer);
+    lv_timer_resume(level_timer);
+    bsp_display_unlock();
+}
 
 static void read_touch(lv_indev_t *indev, lv_indev_data_t *data)
 {
@@ -50,14 +68,14 @@ static void read_touch(lv_indev_t *indev, lv_indev_data_t *data)
     touch_read(indev, data);
     if (!touch_callback) return;
     if (data->state == LV_INDEV_STATE_PRESSED) {
-        /* The touch panel is mounted 180 degrees relative to the LCD. */
+        /* The controller Y axis already follows the display. */
         last.x = BSP_LCD_H_RES - 1 - data->point.x;
-        last.y = BSP_LCD_V_RES - 1 - data->point.y;
+        last.y = data->point.y;
         data->point = last;
         if (!pressed) {
             ESP_LOGI(TAG, "touch down x=%d y=%d", (int)last.x, (int)last.y);
-            touch_callback(last.x, last.y, true, touch_context);
         }
+        touch_callback(last.x, last.y, true, touch_context);
         pressed = true;
     } else if (pressed) {
         pressed = false;
@@ -306,6 +324,16 @@ esp_err_t s31_board_init(s31_video_t *video)
     lv_label_set_text(footer, "方向键  选择     A  启动     B  刷新");
     lv_obj_set_style_text_color(footer, lv_color_hex(0x64748b), 0);
     lv_obj_align(footer, LV_ALIGN_BOTTOM_MID, 0, -16);
+    level_label = lv_label_create(screen);
+    use_catalog_font(level_label);
+    lv_obj_set_style_bg_color(level_label, lv_color_black(), 0);
+    lv_obj_set_style_bg_opa(level_label, LV_OPA_80, 0);
+    lv_obj_set_style_text_color(level_label, lv_color_white(), 0);
+    lv_obj_set_style_pad_all(level_label, 8, 0);
+    lv_obj_align(level_label, LV_ALIGN_TOP_MID, 0, 20);
+    lv_obj_set_hidden(level_label, true);
+    level_timer = lv_timer_create(hide_level, 1000, NULL);
+    if (level_timer) lv_timer_pause(level_timer);
     ESP_LOGI(TAG, "LVGL catalog ready: black background, game images hidden");
     bsp_display_unlock();
 
@@ -351,14 +379,20 @@ esp_err_t s31_board_set_volume(int volume)
     if (!speaker) return ESP_ERR_INVALID_STATE;
     if (volume < 0) volume = 0;
     if (volume > 100) volume = 100;
-    return esp_codec_dev_set_out_vol(speaker, volume);
+    esp_err_t result = esp_codec_dev_set_out_vol(speaker, volume);
+    ESP_LOGI(TAG, "touch volume=%d result=%s", volume, esp_err_to_name(result));
+    if (result == ESP_OK) show_level("音量", volume);
+    return result;
 }
 
 esp_err_t s31_board_set_brightness(int brightness)
 {
     if (brightness < 10) brightness = 10;
     if (brightness > 100) brightness = 100;
-    return bsp_display_brightness_set(brightness);
+    esp_err_t result = bsp_display_brightness_set(brightness);
+    ESP_LOGI(TAG, "touch brightness=%d result=%s", brightness, esp_err_to_name(result));
+    if (result == ESP_OK) show_level("亮度", brightness);
+    return result;
 }
 
 const char *s31_board_rom_root(void) { return "/sdcard/roms"; }
@@ -374,21 +408,20 @@ int s31_board_present_nes(const uint16_t *pixels, uint16_t width, uint16_t heigh
     return 0;
 }
 
-void s31_board_show_catalog(const s31_game_catalog_t *catalog, size_t selected, const char *status)
+void s31_board_show_catalog(const s31_game_catalog_t *catalog, size_t first, size_t selected, const char *status)
 {
     if (!catalog || !catalog_label) return;
     if (!bsp_display_lock(1000)) {
         ESP_LOGE(TAG, "catalog display lock timed out");
         return;
     }
-    size_t page_start = (selected / 10u) * 10u;
     char status_text[96];
     snprintf(status_text, sizeof(status_text), "%u / %u%s%s",
              (unsigned)(catalog->count ? selected + 1 : 0), (unsigned)catalog->count,
              status ? "   " : "", status ? status : "");
     lv_label_set_text(catalog_status, status_text);
     for (size_t row = 0; row < 10; ++row) {
-        size_t index = page_start + row;
+        size_t index = first + row;
         if (index >= catalog->count) {
             lv_obj_set_hidden(catalog_rows[row], true);
             continue;

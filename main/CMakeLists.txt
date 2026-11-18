@@ -43,6 +43,7 @@ set(S31_SRCS
     ../third_party/nes/core/nes_default.c
     ../third_party/nes/core/nes_rom.c
     ../third_party/nes/core/nes_cpu.c
+    ../third_party/nes/core/nes_apu.c
     ../third_party/nes/core/nes_mapper.c
     ../third_party/nes/core/nes_ppu.c
     ../third_party/nes/core/nes_mapper/nes_mapper0.c
@@ -67,6 +68,7 @@ idf_component_register(
              fatfs sdmmc driver esp_timer esp_hid bt nvs_flash usb esp_hw_support
 )
 target_compile_definitions(${COMPONENT_LIB} PRIVATE CONFIG_NES_MAPPER_INFONES_ENABLE=1 CONFIG_NES_MAPPER_INFONES_ALL=1)
+target_compile_options(${COMPONENT_LIB} PRIVATE -O2)
 set_source_files_properties(
     ../third_party/gnuboy/gnuboy.c
     ../third_party/gnuboy/cpu.c

@@ -1,7 +1,12 @@
 #pragma once
 
+#ifdef ESP_PLATFORM
+#define NES_ENABLE_SOUND 1
+#define NES_AUDIO_MIX_S16_ENABLE 1
+#else
 #define NES_ENABLE_SOUND 0
 #define NES_AUDIO_MIX_S16_ENABLE 0
+#endif
 #define NES_USE_FS 0
 #define NES_FRAME_SKIP 0
 #define NES_COLOR_DEPTH 16

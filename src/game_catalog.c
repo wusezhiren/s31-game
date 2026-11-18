@@ -47,7 +47,7 @@ static void scan_dir(const char *root, s31_game_catalog_t *catalog, unsigned dep
         if (platform == S31_GAME_UNKNOWN) continue;
         s31_game_entry_t *item = &catalog->entries[catalog->count++];
         memset(item, 0, sizeof(*item));
-        strncpy(item->path, path, sizeof(item->path) - 1);
+        memcpy(item->path, path, (size_t)n + 1);
 #ifdef ESP_PLATFORM
         static bool logged_utf8_name;
         if (!logged_utf8_name) {

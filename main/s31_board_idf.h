@@ -19,6 +19,6 @@ int s31_board_present_gb(const uint16_t *pixels, uint16_t width, uint16_t height
 int s31_board_present_sms(const uint16_t *pixels, uint16_t width, uint16_t height);
 int s31_board_present_pce(const uint16_t *pixels, uint16_t width, uint16_t height);
 int s31_board_audio_write_pce(const int16_t *samples, size_t bytes);
-void s31_board_show_catalog(const s31_game_catalog_t *catalog, size_t selected, const char *status);
+void s31_board_show_catalog(const s31_game_catalog_t *catalog, size_t first, size_t selected, const char *status);
 void s31_board_show_game(void);
 void s31_board_show_pause(bool paused);

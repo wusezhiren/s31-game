@@ -8,8 +8,48 @@
 #include "s31/video.h"
 #include "s31/nes_video.h"
 #ifdef ESP_PLATFORM
+#include "s31_board_idf.h"
+#include "esp_heap_caps.h"
+#include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
+static TickType_t frame_tick;
+static TickType_t fps_tick;
+static unsigned frames;
+static int64_t profile_start, profile_video, profile_audio, profile_wait;
+static bool pcm_logged;
+static int16_t *pcm_stereo;
+static int16_t *pcm_mono;
+
+int nes_audio_reference_path_enabled(void) { return 0; }
+
+int nes_sound_output_s16(const int16_t *buffer, size_t len)
+{
+    static int32_t dc;
+    if (!pcm_stereo || len > NES_APU_SAMPLE_PER_SYNC_MAX) return -1;
+    bool nonzero = false;
+    for (size_t i = 0; i < len; ++i) {
+        int32_t sample = buffer[i];
+        dc += (sample * 256 - dc) / 256;
+        pcm_stereo[2 * i] = pcm_stereo[2 * i + 1] = (int16_t)(sample - dc / 256);
+        nonzero |= pcm_stereo[2 * i] != 0;
+    }
+    int64_t start = esp_timer_get_time();
+    int result = s31_board_audio_write(pcm_stereo, len * 2 * sizeof(*pcm_stereo));
+    profile_audio += esp_timer_get_time() - start;
+    if (!pcm_logged && nonzero && result == 0) {
+        pcm_logged = true;
+        printf("NES audio: nonzero PCM accepted (%u frames)\n", (unsigned)len);
+    }
+    return result;
+}
+
+int nes_sound_output(uint8_t *buffer, size_t len)
+{
+    if (!pcm_mono || len > NES_APU_SAMPLE_PER_SYNC_MAX) return -1;
+    for (size_t i = 0; i < len; ++i) pcm_mono[i] = ((int)buffer[i] - 128) * 128;
+    return nes_sound_output_s16(pcm_mono, len);
+}
 #endif
 
 struct s31_nes {
@@ -42,7 +82,14 @@ int nes_deinitex(nes_t *core) { (void)core; return NES_OK; }
 
 int nes_draw(int x1, int y1, int x2, int y2, nes_color_t *pixels) {
     (void)x1; (void)y1; (void)x2; (void)y2;
-    return s31_board_present_nes((const uint16_t *)pixels, NES_WIDTH, NES_HEIGHT);
+#ifdef ESP_PLATFORM
+    int64_t start = esp_timer_get_time();
+#endif
+    int result = s31_board_present_nes((const uint16_t *)pixels, NES_WIDTH, NES_HEIGHT);
+#ifdef ESP_PLATFORM
+    profile_video += esp_timer_get_time() - start;
+#endif
+    return result;
 }
 
 static uint16_t to_nes_buttons(s31_buttons_t buttons) {
@@ -100,15 +147,53 @@ void s31_nes_frame(s31_nes_t *nes) {
 void nes_frame(nes_t *core) {
     if (running_nes) core->nes_cpu.joypad.joypad = to_nes_buttons(running_nes->buttons);
 #ifdef ESP_PLATFORM
-    while (running_nes && running_nes->paused) vTaskDelay(pdMS_TO_TICKS(20));
-    vTaskDelay(pdMS_TO_TICKS(16));
+    int64_t wait_start = esp_timer_get_time();
+    while (running_nes && running_nes->paused) {
+        vTaskDelay(pdMS_TO_TICKS(20));
+        frame_tick = xTaskGetTickCount();
+    }
+    if (running_nes && !xTaskDelayUntil(&frame_tick, pdMS_TO_TICKS(16))) {
+        frame_tick = xTaskGetTickCount();
+        vTaskDelay(1);
+    }
+    if (running_nes) {
+        TickType_t now = xTaskGetTickCount();
+        ++frames;
+        if (now - fps_tick >= pdMS_TO_TICKS(3000)) {
+            int64_t end = esp_timer_get_time();
+            profile_wait += end - wait_start;
+            printf("NES profile us/frame: total=%lld video=%lld audio_write=%lld wait=%lld\n",
+                   (long long)((end - profile_start) / frames), (long long)(profile_video / frames),
+                   (long long)(profile_audio / frames), (long long)(profile_wait / frames));
+            profile_start = esp_timer_get_time();
+            profile_video = profile_audio = profile_wait = 0;
+            printf("NES emulation: %.1f FPS\n", (double)frames * configTICK_RATE_HZ / (now - fps_tick));
+            frames = 0;
+            fps_tick = now;
+        } else profile_wait += esp_timer_get_time() - wait_start;
+    }
 #endif
 }
 
 void s31_nes_run(s31_nes_t *nes) {
     if (!nes || !nes->loaded) return;
     running_nes = nes;
+#ifdef ESP_PLATFORM
+    frame_tick = xTaskGetTickCount();
+    fps_tick = frame_tick;
+    frames = 0;
+    profile_start = esp_timer_get_time();
+    profile_video = profile_audio = profile_wait = 0;
+    pcm_logged = false;
+    pcm_stereo = heap_caps_malloc(NES_APU_SAMPLE_PER_SYNC_MAX * 3 * sizeof(*pcm_stereo),
+                                  MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    pcm_mono = pcm_stereo ? pcm_stereo + NES_APU_SAMPLE_PER_SYNC_MAX * 2 : NULL;
+#endif
     nes_run(nes->core);
+#ifdef ESP_PLATFORM
+    free(pcm_stereo);
+    pcm_stereo = pcm_mono = NULL;
+#endif
     running_nes = NULL;
 }
 

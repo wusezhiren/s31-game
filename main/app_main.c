@@ -32,6 +32,7 @@ static volatile bool serial_upload_finished;
 static volatile bool serial_command_pending;
 static bool catalog_input_armed;
 static size_t selected;
+static size_t catalog_first;
 static s31_game_nav_repeat_t nav_repeat;
 static char active_save_path[320];
 static char serial_upload_name[96];
@@ -39,44 +40,60 @@ static char serial_command_name[96];
 static char serial_command_action[8];
 static volatile app_mode_t mode = APP_CATALOG;
 static int start_selected_game(void);
-static volatile bool touch_event_pending;
-static volatile bool touch_down;
-static volatile int32_t touch_x, touch_y;
-static int32_t touch_start_x, touch_start_y;
-static bool touch_tracking;
+static portMUX_TYPE touch_lock = portMUX_INITIALIZER_UNLOCKED;
+static struct {
+    int32_t x0, y0, x, y;
+    bool down, pending;
+    unsigned id;
+} touch;
+
+static void show_catalog(const char *status)
+{
+    s31_board_show_catalog(&catalog, catalog_first, selected, status);
+}
 
 static void on_touch(int32_t x, int32_t y, bool down, void *context)
 {
     (void)context;
-    if (down) {
-        if (!touch_tracking) {
-            touch_start_x = x;
-            touch_start_y = y;
-            touch_tracking = true;
-        }
-    } else if (touch_tracking) {
-        touch_x = x;
-        touch_y = y;
-        touch_down = false;
-        touch_event_pending = true;
-        touch_tracking = false;
+    portENTER_CRITICAL(&touch_lock);
+    if (down && !touch.down) {
+        touch.x0 = x;
+        touch.y0 = y;
+        ++touch.id;
     }
+    touch.x = x;
+    touch.y = y;
+    touch.down = down;
+    touch.pending = true;
+    portEXIT_CRITICAL(&touch_lock);
 }
 
 static void handle_touch(void)
 {
-    if (!touch_event_pending) return;
-    touch_event_pending = false;
-    int32_t dx = touch_x - touch_start_x;
-    int32_t dy = touch_y - touch_start_y;
+    static unsigned gesture_id;
+    static size_t drag_first;
+    static bool dragging;
+    portENTER_CRITICAL(&touch_lock);
+    typeof(touch) sample = touch;
+    touch.pending = false;
+    portEXIT_CRITICAL(&touch_lock);
+    if (!sample.pending) return;
+    if (gesture_id != sample.id) {
+        gesture_id = sample.id;
+        drag_first = catalog_first;
+        dragging = false;
+    }
+    int32_t dx = sample.x - sample.x0;
+    int32_t dy = sample.y - sample.y0;
     if (mode == APP_RUNNING || mode == APP_PAUSED) {
-        if (touch_start_x < 266 && abs(dy) >= 40 && abs(dy) > abs(dx)) {
+        if (sample.down) return;
+        if (sample.x0 < 266 && abs(dy) >= 40 && abs(dy) > abs(dx)) {
             static int volume = 20;
             volume += dy < 0 ? 5 : -5;
             if (volume < 0) volume = 0;
             if (volume > 100) volume = 100;
             s31_board_set_volume(volume);
-        } else if (touch_start_x >= 534 && abs(dy) >= 40 && abs(dy) > abs(dx)) {
+        } else if (sample.x0 >= 534 && abs(dy) >= 40 && abs(dy) > abs(dx)) {
             static int brightness = 100;
             brightness += dy < 0 ? 5 : -5;
             if (brightness < 10) brightness = 10;
@@ -85,20 +102,30 @@ static void handle_touch(void)
         }
         return;
     }
+    if (s31_serial_upload_active()) return;
+    if (dragging || (abs(dy) >= 34 && abs(dy) > abs(dx))) {
+        dragging = true;
+        int first = (int)drag_first - dy / 34;
+        int max_first = catalog.count > 10 ? (int)catalog.count - 10 : 0;
+        if (first < 0) first = 0;
+        if (first > max_first) first = max_first;
+        if (catalog_first != (size_t)first) {
+            catalog_first = (size_t)first;
+            show_catalog(NULL);
+        }
+        return;
+    }
+    if (sample.down) return;
     if (abs(dx) >= 40 && abs(dx) > abs(dy)) {
-        selected = s31_game_catalog_page_move(selected, catalog.count, dx < 0 ? -1 : 1);
+        selected = catalog_first = s31_game_catalog_page_move(catalog_first, catalog.count, dx < 0 ? -1 : 1);
         ESP_LOGI(TAG, "touch page=%u selected=%u", (unsigned)(selected / 10 + 1), (unsigned)(selected + 1));
-        s31_board_show_catalog(&catalog, selected, NULL);
-    } else if (abs(dy) >= 40 && abs(dy) > abs(dx)) {
-        if (dy < 0 && selected + 1 < catalog.count) selected++;
-        if (dy > 0 && selected) selected--;
-        s31_board_show_catalog(&catalog, selected, NULL);
-    } else if (touch_start_y >= 82 && touch_start_y < 422) {
-        size_t row = (size_t)((touch_start_y - 82) / 34);
-        size_t page_start = (selected / 10u) * 10u;
-        if (page_start + row < catalog.count) {
-            selected = page_start + row;
-            start_selected_game();
+        show_catalog(NULL);
+    } else if (abs(dx) < 12 && abs(dy) < 12 && sample.x0 >= 24 && sample.x0 < 776 &&
+               sample.y0 >= 82 && sample.y0 < 422 && (sample.y0 - 82) % 34 < 30) {
+        size_t row = (size_t)((sample.y0 - 82) / 34);
+        if (catalog_first + row < catalog.count) {
+            selected = catalog_first + row;
+            if (start_selected_game()) show_catalog("unsupported or load failed");
         }
     }
 }
@@ -157,9 +184,13 @@ static void gb_task(void *arg)
     (void)arg;
     nes_task_running = true;
     vTaskDelay(pdMS_TO_TICKS(50));
+    TickType_t frame_tick = xTaskGetTickCount();
     while (active_gb && mode != APP_CATALOG) {
         if (mode == APP_RUNNING) s31_gb_run_frame(active_gb);
-        vTaskDelay(pdMS_TO_TICKS(16));
+        if (!xTaskDelayUntil(&frame_tick, pdMS_TO_TICKS(16))) {
+            vTaskDelay(1);
+            frame_tick = xTaskGetTickCount();
+        }
     }
     nes_task_running = false;
     vTaskDelete(NULL);
@@ -170,9 +201,13 @@ static void sms_task(void *arg)
     (void)arg;
     nes_task_running = true;
     vTaskDelay(pdMS_TO_TICKS(50));
+    TickType_t frame_tick = xTaskGetTickCount();
     while (active_sms && mode != APP_CATALOG) {
         if (mode == APP_RUNNING) s31_sms_run_frame(active_sms);
-        vTaskDelay(pdMS_TO_TICKS(16));
+        if (!xTaskDelayUntil(&frame_tick, pdMS_TO_TICKS(16))) {
+            vTaskDelay(1);
+            frame_tick = xTaskGetTickCount();
+        }
     }
     nes_task_running = false;
     vTaskDelete(NULL);
@@ -183,9 +218,13 @@ static void pce_task(void *arg)
     (void)arg;
     nes_task_running = true;
     vTaskDelay(pdMS_TO_TICKS(50));
+    TickType_t frame_tick = xTaskGetTickCount();
     while (active_pce && mode != APP_CATALOG) {
         if (mode == APP_RUNNING) s31_pce_run_frame(active_pce);
-        vTaskDelay(pdMS_TO_TICKS(16));
+        if (!xTaskDelayUntil(&frame_tick, pdMS_TO_TICKS(16))) {
+            vTaskDelay(1);
+            frame_tick = xTaskGetTickCount();
+        }
     }
     nes_task_running = false;
     vTaskDelete(NULL);
@@ -199,7 +238,9 @@ static void refresh_catalog(const char *status)
     if (selected >= catalog.count) selected = catalog.count ? catalog.count - 1 : 0;
     ESP_LOGI(TAG, "game catalog: %d entries, %u supported, %u unsupported", count,
              (unsigned)supported, (unsigned)(catalog.count - supported));
-    s31_board_show_catalog(&catalog, selected, status);
+    if (selected < catalog_first || selected >= catalog_first + 10)
+        catalog_first = selected / 10 * 10;
+    show_catalog(status);
 }
 
 static int start_selected_game(void)
@@ -369,15 +410,21 @@ void app_main(void)
             }
             uint32_t now_ms = (uint32_t)(xTaskGetTickCount() * portTICK_PERIOD_MS);
             s31_buttons_t navigation = s31_game_catalog_repeat(&nav_repeat, buttons, pressed, now_ms);
+            if (((navigation & (S31_BUTTON_UP | S31_BUTTON_DOWN)) || (pressed & S31_BUTTON_A)) &&
+                (selected < catalog_first || selected >= catalog_first + 10))
+                selected = catalog_first;
             if ((navigation & S31_BUTTON_UP) && selected) selected--;
             if ((navigation & S31_BUTTON_DOWN) && selected + 1 < catalog.count) selected++;
-            if (navigation & S31_BUTTON_LEFT) selected = s31_game_catalog_page_move(selected, catalog.count, -1);
-            if (navigation & S31_BUTTON_RIGHT) selected = s31_game_catalog_page_move(selected, catalog.count, 1);
-            if (navigation)
-                s31_board_show_catalog(&catalog, selected, NULL);
+            if (navigation & S31_BUTTON_LEFT) selected = catalog_first = s31_game_catalog_page_move(catalog_first, catalog.count, -1);
+            if (navigation & S31_BUTTON_RIGHT) selected = catalog_first = s31_game_catalog_page_move(catalog_first, catalog.count, 1);
+            if (navigation) {
+                if (selected < catalog_first) catalog_first = selected;
+                if (selected >= catalog_first + 10) catalog_first = selected - 9;
+                show_catalog(NULL);
+            }
             if (pressed & S31_BUTTON_A) {
                 int result = start_selected_game();
-                if (result) s31_board_show_catalog(&catalog, selected, "unsupported or load failed");
+                if (result) show_catalog("unsupported or load failed");
             }
             if (pressed & S31_BUTTON_B) refresh_catalog("refreshed");
         } else if (active_nes || active_gb || active_sms || active_pce) {
