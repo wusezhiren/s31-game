@@ -13,10 +13,12 @@
 #include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
-static TickType_t frame_tick;
+static int64_t next_frame_us;
+static int64_t last_yield_us;
 static TickType_t fps_tick;
 static unsigned frames;
 static int64_t profile_start, profile_video, profile_audio, profile_wait;
+extern int64_t s31_nes_prof_cpu_us, s31_nes_prof_bg_us, s31_nes_prof_spr_us, s31_nes_prof_apu_us;
 static bool pcm_logged;
 static int16_t *pcm_stereo;
 static int16_t *pcm_mono;
@@ -66,7 +68,14 @@ __attribute__((weak)) int s31_board_present_nes(const uint16_t *pixels, uint16_t
     (void)pixels; (void)width; (void)height; return 0;
 }
 
-void *nes_sram_malloc(int size) { return malloc((size_t)size); }
+void *nes_sram_malloc(int size) {
+#ifdef ESP_PLATFORM
+    /* 显式分配到带 64KB L1 DCache 的 PSRAM，避免落入低速 0x2E00xxxx RTCRAM */
+    void *ptr = heap_caps_malloc((size_t)size, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    if (ptr) return ptr;
+#endif
+    return malloc((size_t)size);
+}
 void nes_sram_free(void *ptr) { free(ptr); }
 uint32_t nes_get_ms(void) { return 0; }
 int nes_log_printf(const char *format, ...) {
@@ -150,11 +159,26 @@ void nes_frame(nes_t *core) {
     int64_t wait_start = esp_timer_get_time();
     while (running_nes && running_nes->paused) {
         vTaskDelay(pdMS_TO_TICKS(20));
-        frame_tick = xTaskGetTickCount();
+        next_frame_us = esp_timer_get_time();
+        last_yield_us = next_frame_us;
     }
-    if (running_nes && !xTaskDelayUntil(&frame_tick, pdMS_TO_TICKS(16))) {
-        frame_tick = xTaskGetTickCount();
-        vTaskDelay(1);
+    if (running_nes) {
+        /* 60Hz 微秒级帧节拍，仅在有富余时间或较久未让出 CPU 时休眠 */
+        next_frame_us += 16667;
+        int64_t now_us = esp_timer_get_time();
+        int64_t remain_us = next_frame_us - now_us;
+        if (remain_us >= 1000) {
+            vTaskDelay(pdMS_TO_TICKS((uint32_t)(remain_us / 1000)));
+            last_yield_us = esp_timer_get_time();
+        } else {
+            if (remain_us < -33334) {
+                next_frame_us = now_us;
+            }
+            if (now_us - last_yield_us >= 100000) {
+                vTaskDelay(1);
+                last_yield_us = esp_timer_get_time();
+            }
+        }
     }
     if (running_nes) {
         TickType_t now = xTaskGetTickCount();
@@ -162,11 +186,14 @@ void nes_frame(nes_t *core) {
         if (now - fps_tick >= pdMS_TO_TICKS(3000)) {
             int64_t end = esp_timer_get_time();
             profile_wait += end - wait_start;
-            printf("NES profile us/frame: total=%lld video=%lld audio_write=%lld wait=%lld\n",
+            printf("NES profile us/frame: total=%lld video=%lld cpu=%lld bg=%lld spr=%lld apu=%lld audio_write=%lld wait=%lld\n",
                    (long long)((end - profile_start) / frames), (long long)(profile_video / frames),
+                   (long long)(s31_nes_prof_cpu_us / frames), (long long)(s31_nes_prof_bg_us / frames),
+                   (long long)(s31_nes_prof_spr_us / frames), (long long)(s31_nes_prof_apu_us / frames),
                    (long long)(profile_audio / frames), (long long)(profile_wait / frames));
             profile_start = esp_timer_get_time();
             profile_video = profile_audio = profile_wait = 0;
+            s31_nes_prof_cpu_us = s31_nes_prof_bg_us = s31_nes_prof_spr_us = s31_nes_prof_apu_us = 0;
             printf("NES emulation: %.1f FPS\n", (double)frames * configTICK_RATE_HZ / (now - fps_tick));
             frames = 0;
             fps_tick = now;
@@ -179,11 +206,14 @@ void s31_nes_run(s31_nes_t *nes) {
     if (!nes || !nes->loaded) return;
     running_nes = nes;
 #ifdef ESP_PLATFORM
-    frame_tick = xTaskGetTickCount();
-    fps_tick = frame_tick;
+    next_frame_us = esp_timer_get_time();
+    last_yield_us = next_frame_us;
+    fps_tick = xTaskGetTickCount();
     frames = 0;
-    profile_start = esp_timer_get_time();
+    profile_start = next_frame_us;
     profile_video = profile_audio = profile_wait = 0;
+    s31_nes_prof_cpu_us = s31_nes_prof_bg_us = s31_nes_prof_spr_us = s31_nes_prof_apu_us = 0;
+    printf("NES mem: core=%p draw=%p stack=%p\n", (void *)nes->core, (void *)nes->core->nes_draw_data, (void *)&nes);
     pcm_logged = false;
     pcm_stereo = heap_caps_malloc(NES_APU_SAMPLE_PER_SYNC_MAX * 3 * sizeof(*pcm_stereo),
                                   MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);

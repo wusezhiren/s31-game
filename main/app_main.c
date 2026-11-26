@@ -2,6 +2,7 @@
 #include <stdlib.h>
 #include <sys/stat.h>
 #include "esp_log.h"
+#include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "s31_board_idf.h"
@@ -179,17 +180,41 @@ static void nes_task(void *arg)
     vTaskDelete(NULL);
 }
 
+/* 统一的 60Hz 微秒级帧节拍控制，避免掉帧时额外罚睡 1ms 并定期喂 IDLE 看门狗 */
+static void pace_60hz_frame(int64_t *next_frame_us, int64_t *last_yield_us)
+{
+    *next_frame_us += 16667;
+    int64_t now_us = esp_timer_get_time();
+    int64_t remain_us = *next_frame_us - now_us;
+    if (remain_us >= 1000) {
+        vTaskDelay(pdMS_TO_TICKS((uint32_t)(remain_us / 1000)));
+        *last_yield_us = esp_timer_get_time();
+    } else {
+        if (remain_us < -33334) {
+            *next_frame_us = now_us;
+        }
+        if (now_us - *last_yield_us >= 100000) {
+            vTaskDelay(1);
+            *last_yield_us = esp_timer_get_time();
+        }
+    }
+}
+
 static void gb_task(void *arg)
 {
     (void)arg;
     nes_task_running = true;
     vTaskDelay(pdMS_TO_TICKS(50));
-    TickType_t frame_tick = xTaskGetTickCount();
+    int64_t next_frame_us = esp_timer_get_time();
+    int64_t last_yield_us = next_frame_us;
     while (active_gb && mode != APP_CATALOG) {
-        if (mode == APP_RUNNING) s31_gb_run_frame(active_gb);
-        if (!xTaskDelayUntil(&frame_tick, pdMS_TO_TICKS(16))) {
-            vTaskDelay(1);
-            frame_tick = xTaskGetTickCount();
+        if (mode == APP_RUNNING) {
+            s31_gb_run_frame(active_gb);
+            pace_60hz_frame(&next_frame_us, &last_yield_us);
+        } else {
+            vTaskDelay(pdMS_TO_TICKS(20));
+            next_frame_us = esp_timer_get_time();
+            last_yield_us = next_frame_us;
         }
     }
     nes_task_running = false;
@@ -201,12 +226,16 @@ static void sms_task(void *arg)
     (void)arg;
     nes_task_running = true;
     vTaskDelay(pdMS_TO_TICKS(50));
-    TickType_t frame_tick = xTaskGetTickCount();
+    int64_t next_frame_us = esp_timer_get_time();
+    int64_t last_yield_us = next_frame_us;
     while (active_sms && mode != APP_CATALOG) {
-        if (mode == APP_RUNNING) s31_sms_run_frame(active_sms);
-        if (!xTaskDelayUntil(&frame_tick, pdMS_TO_TICKS(16))) {
-            vTaskDelay(1);
-            frame_tick = xTaskGetTickCount();
+        if (mode == APP_RUNNING) {
+            s31_sms_run_frame(active_sms);
+            pace_60hz_frame(&next_frame_us, &last_yield_us);
+        } else {
+            vTaskDelay(pdMS_TO_TICKS(20));
+            next_frame_us = esp_timer_get_time();
+            last_yield_us = next_frame_us;
         }
     }
     nes_task_running = false;
@@ -218,12 +247,16 @@ static void pce_task(void *arg)
     (void)arg;
     nes_task_running = true;
     vTaskDelay(pdMS_TO_TICKS(50));
-    TickType_t frame_tick = xTaskGetTickCount();
+    int64_t next_frame_us = esp_timer_get_time();
+    int64_t last_yield_us = next_frame_us;
     while (active_pce && mode != APP_CATALOG) {
-        if (mode == APP_RUNNING) s31_pce_run_frame(active_pce);
-        if (!xTaskDelayUntil(&frame_tick, pdMS_TO_TICKS(16))) {
-            vTaskDelay(1);
-            frame_tick = xTaskGetTickCount();
+        if (mode == APP_RUNNING) {
+            s31_pce_run_frame(active_pce);
+            pace_60hz_frame(&next_frame_us, &last_yield_us);
+        } else {
+            vTaskDelay(pdMS_TO_TICKS(20));
+            next_frame_us = esp_timer_get_time();
+            last_yield_us = next_frame_us;
         }
     }
     nes_task_running = false;
@@ -289,6 +322,7 @@ static int start_selected_game(void)
     nes_task_running = true;
     TaskFunction_t task = active_core == CORE_NES ? nes_task : active_core == CORE_GB ? gb_task : active_core == CORE_SMS ? sms_task : pce_task;
     uint32_t stack_size = active_core == CORE_PCE ? 12288 : 8192;
+    /* 模拟器任务栈使用带 L1 DCache 的 PSRAM，避免误落入低速 RTCRAM 并保留内部 DMA 堆 */
     if (xTaskCreatePinnedToCoreWithCaps(task, "emu_core", stack_size, NULL, 5, NULL, 1,
                                         MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT) != pdPASS) {
         nes_task_running = false;

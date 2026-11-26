@@ -64,7 +64,7 @@ list(APPEND S31_SRCS ../third_party/nes/core/nes_mapper/nes_mapper_infones.c ${I
 idf_component_register(
     SRCS ${S31_SRCS}
     INCLUDE_DIRS "../include" "." "../third_party/nes/inc" "../third_party/nes/port" "../third_party/gnuboy" "../third_party/smsplus" "../third_party/pce-go"
-    REQUIRES bsp_ues31s043h800v480c_u esp_lcd esp_lvgl_port esp_codec_dev
+    REQUIRES bsp_ues31s043h800v480c_u esp_lcd esp_lvgl_port esp_codec_dev esp_driver_ppa esp_mm
              fatfs sdmmc driver esp_timer esp_hid bt nvs_flash usb esp_hw_support
 )
 target_compile_definitions(${COMPONENT_LIB} PRIVATE CONFIG_NES_MAPPER_INFONES_ENABLE=1 CONFIG_NES_MAPPER_INFONES_ALL=1)

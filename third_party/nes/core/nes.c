@@ -15,6 +15,20 @@
  */
 
 #include "nes.h"
+#ifdef ESP_PLATFORM
+#include "esp_timer.h"
+int64_t s31_nes_prof_cpu_us;
+int64_t s31_nes_prof_bg_us;
+int64_t s31_nes_prof_spr_us;
+int64_t s31_nes_prof_apu_us;
+#define S31_PROF_ACC(field, code) do { \
+    int64_t _t0 = esp_timer_get_time(); \
+    code \
+    field += esp_timer_get_time() - _t0; \
+} while (0)
+#else
+#define S31_PROF_ACC(field, code) do { code } while (0)
+#endif
 
 #ifndef CONFIG_NES_VISIBLE_X_OFFSET
 #define CONFIG_NES_VISIBLE_X_OFFSET 8
@@ -911,7 +925,7 @@ void nes_run(nes_t* nes){
         }
 #if (NES_ENABLE_SOUND==1)
         if (!no_apu_frame) {
-            NES_CORE_PROF_RUN(apu_cycles, apu_calls, {
+            S31_PROF_ACC(s31_nes_prof_apu_us, {
                 nes_apu_frame(nes);
             });
         }
@@ -920,16 +934,14 @@ void nes_run(nes_t* nes){
             if (nes->nes_ppu.MASK_b && !no_ppu_render){
                 if (draw_frame) {
                     if (nes->nes_mapper.mapper_render_screen) {
-                        NES_CORE_PROF_RUN(mapper_cycles, mapper_calls, {
-                            nes->nes_mapper.mapper_render_screen(nes, 1);
-                        });
+                        nes->nes_mapper.mapper_render_screen(nes, 1);
                     }
 #if (NES_RAM_LACK == 1)
-                NES_CORE_PROF_RUN(bg_cycles, bg_calls, {
+                S31_PROF_ACC(s31_nes_prof_bg_us, {
                     nes_render_background_line(nes, nes->scanline, nes->nes_draw_data + nes->scanline%(NES_HEIGHT/2) * NES_WIDTH);
                 });
 #else
-                NES_CORE_PROF_RUN(bg_cycles, bg_calls, {
+                S31_PROF_ACC(s31_nes_prof_bg_us, {
                     nes_render_background_line(nes, nes->scanline, nes->nes_draw_data + nes->scanline * NES_WIDTH);
                 });
 #endif
@@ -940,16 +952,14 @@ void nes_run(nes_t* nes){
                 if (draw_frame) {
 #endif
                 if (nes->nes_mapper.mapper_render_screen) {
-                    NES_CORE_PROF_RUN(mapper_cycles, mapper_calls, {
-                        nes->nes_mapper.mapper_render_screen(nes, 0);
-                    });
+                    nes->nes_mapper.mapper_render_screen(nes, 0);
                 }
 #if (NES_RAM_LACK == 1)
-                NES_CORE_PROF_RUN(sprite_cycles, sprite_calls, {
+                S31_PROF_ACC(s31_nes_prof_spr_us, {
                     nes_render_sprite_line(nes, nes->scanline,nes->nes_draw_data + nes->scanline%(NES_HEIGHT/2) * NES_WIDTH);
                 });
 #else
-                NES_CORE_PROF_RUN(sprite_cycles, sprite_calls, {
+                S31_PROF_ACC(s31_nes_prof_spr_us, {
                     nes_render_sprite_line(nes, nes-> scanline,nes->nes_draw_data + nes->scanline * NES_WIDTH);
                 });
 #endif
@@ -962,11 +972,11 @@ void nes_run(nes_t* nes){
 #endif
             }
 #if CONFIG_NES_FAST_SCANLINE_CPU
-            NES_CORE_PROF_RUN(cpu_cycles, cpu_calls, {
+            S31_PROF_ACC(s31_nes_prof_cpu_us, {
                 nes_opcode(nes,NES_PPU_CPU_CLOCKS);
             });
 #else
-            NES_CORE_PROF_RUN(cpu_cycles, cpu_calls, {
+            S31_PROF_ACC(s31_nes_prof_cpu_us, {
                 nes_opcode(nes,85);
             });
 #endif
@@ -989,18 +999,16 @@ void nes_run(nes_t* nes){
                 nes->nes_ppu.v_reg = (nes->nes_ppu.v_reg & (uint16_t)0xFBE0) | (nes->nes_ppu.t_reg & (uint16_t)0x041F);
             }
 #if !CONFIG_NES_FAST_SCANLINE_CPU
-            NES_CORE_PROF_RUN(cpu_cycles, cpu_calls, {
+            S31_PROF_ACC(s31_nes_prof_cpu_us, {
                 nes_opcode(nes,NES_PPU_CPU_CLOCKS-85);
             });
 #endif
             if (nes->nes_mapper.mapper_hsync) {
-                NES_CORE_PROF_RUN(mapper_cycles, mapper_calls, {
-                    nes->nes_mapper.mapper_hsync(nes);
-                });
+                nes->nes_mapper.mapper_hsync(nes);
             }
 #if (NES_ENABLE_SOUND==1)
             if (!no_apu_frame && nes->scanline % 66 == 65) {
-                NES_CORE_PROF_RUN(apu_cycles, apu_calls, {
+                S31_PROF_ACC(s31_nes_prof_apu_us, {
                     nes_apu_frame(nes);
                 });
             }
