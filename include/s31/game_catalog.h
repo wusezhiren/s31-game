@@ -13,6 +13,8 @@ const char *s31_game_platform_icon(s31_game_platform_t platform);
 s31_game_platform_t s31_game_platform_from_path(const char *path);
 int s31_game_probe_nes(const uint8_t *header, size_t length, uint16_t *mapper, bool *supported);
 int s31_game_catalog_scan(const char *root, s31_game_catalog_t *catalog);
+int s31_game_catalog_load_cache(const char *cache_path, s31_game_catalog_t *catalog);
+int s31_game_catalog_save_cache(const char *cache_path, const s31_game_catalog_t *catalog);
 void s31_game_catalog_sort(s31_game_catalog_t *catalog);
 size_t s31_game_catalog_page_move(size_t selected, size_t count, int direction);
 uint32_t s31_game_catalog_repeat(s31_game_nav_repeat_t *state, uint32_t buttons,

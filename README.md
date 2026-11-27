@@ -51,7 +51,7 @@ ctest --test-dir build --output-on-failure
 ```sh
 export IDF_PATH=/home/yjh/esp/esp-idf-master
 export PATH=/home/yjh/.espressif/tools/riscv32-esp-elf/esp-16.1.0_20260609/riscv32-esp-elf/bin:$PATH
-idf.py --preview -B build-s31 -DIDF_TARGET=esp32s31 -p /dev/ttyUSB0 flash
+idf.py --preview -B build-s31 -DIDF_TARGET=esp32s31 -p /dev/ttyUSB0 -b 2000000 flash
 idf.py --preview -B build-s31 -DIDF_TARGET=esp32s31 -p /dev/ttyUSB0 monitor
 ```
 
@@ -63,7 +63,7 @@ python -m esptool --chip esp32s31 merge-bin --flash-mode dio --flash-freq 80m \
   0x2000 build-s31/bootloader/bootloader.bin \
   0x8000 build-s31/partition_table/partition-table.bin \
   0x10000 build-s31/s31_game.bin
-python -m esptool --chip esp32s31 -p /dev/ttyUSB0 -b 460800 \
+python -m esptool --chip esp32s31 -p /dev/ttyUSB0 -b 2000000 \
   --before default-reset --after hard-reset --no-stub write-flash 0x0 \
   build-s31/s31_game_merged.bin
 ```

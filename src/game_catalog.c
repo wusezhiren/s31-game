@@ -39,6 +39,17 @@ static void scan_dir(const char *root, s31_game_catalog_t *catalog, unsigned dep
         char path[256];
         int n = snprintf(path, sizeof(path), "%s/%s", root, entry->d_name);
         if (n < 0 || (size_t)n >= sizeof(path)) continue;
+#ifdef DT_DIR
+        /* 优先利用 d_type 判断目录/文件类型，避免对无关文件和子目录执行大量 stat() */
+        if (entry->d_type == DT_DIR) {
+            scan_dir(path, catalog, depth + 1);
+            continue;
+        }
+        if (entry->d_type == DT_REG) {
+            s31_game_platform_t quick_platform = s31_game_platform_from_path(entry->d_name);
+            if (quick_platform == S31_GAME_UNKNOWN) continue;
+        }
+#endif
         struct stat st;
         if (stat(path, &st) != 0) continue;
         if (S_ISDIR(st.st_mode)) { scan_dir(path, catalog, depth + 1); continue; }
@@ -87,12 +98,83 @@ static void scan_dir(const char *root, s31_game_catalog_t *catalog, unsigned dep
         if (platform == S31_GAME_NES) {
             FILE *file = fopen(path, "rb");
             uint8_t header[8];
-            size_t read = file ? fread(header, 1, sizeof(header), file) : 0;
-            if (file) fclose(file);
+            size_t read = 0;
+            if (file) {
+                /* 仅需读取 8 字节 iNES 头，关闭 stdio 预读缓冲以减少 SD 扇区读取 */
+                setvbuf(file, NULL, _IONBF, 0);
+                read = fread(header, 1, sizeof(header), file);
+                fclose(file);
+            }
             item->valid_header = s31_game_probe_nes(header, read, &item->mapper, &item->supported) == 0;
         }
     }
     closedir(dir);
+}
+
+#define S31_CATALOG_CACHE_MAGIC 0x31433353u
+#define S31_CATALOG_CACHE_VERSION 1u
+
+typedef struct {
+    uint32_t magic;
+    uint32_t version;
+    uint32_t entry_size;
+    uint32_t count;
+} s31_catalog_cache_header_t;
+
+int s31_game_catalog_load_cache(const char *cache_path, s31_game_catalog_t *catalog)
+{
+    if (!cache_path || !catalog) return -1;
+    FILE *file = fopen(cache_path, "rb");
+    if (!file) return -1;
+    s31_catalog_cache_header_t hdr;
+    if (fread(&hdr, sizeof(hdr), 1, file) != 1 ||
+        hdr.magic != S31_CATALOG_CACHE_MAGIC ||
+        hdr.version != S31_CATALOG_CACHE_VERSION ||
+        hdr.entry_size != sizeof(s31_game_entry_t) ||
+        hdr.count > S31_GAME_CATALOG_MAX) {
+        fclose(file);
+        return -1;
+    }
+    memset(catalog, 0, sizeof(*catalog));
+    if (hdr.count > 0 && fread(catalog->entries, sizeof(s31_game_entry_t), hdr.count, file) != hdr.count) {
+        fclose(file);
+        memset(catalog, 0, sizeof(*catalog));
+        return -1;
+    }
+    fclose(file);
+    catalog->count = hdr.count;
+    return (int)catalog->count;
+}
+
+int s31_game_catalog_save_cache(const char *cache_path, const s31_game_catalog_t *catalog)
+{
+    if (!cache_path || !catalog || catalog->count > S31_GAME_CATALOG_MAX) return -1;
+    char tmp_path[280];
+    int n = snprintf(tmp_path, sizeof(tmp_path), "%s.tmp", cache_path);
+    if (n < 0 || (size_t)n >= sizeof(tmp_path)) return -1;
+    FILE *file = fopen(tmp_path, "wb");
+    if (!file) return -1;
+    s31_catalog_cache_header_t hdr = {
+        .magic = S31_CATALOG_CACHE_MAGIC,
+        .version = S31_CATALOG_CACHE_VERSION,
+        .entry_size = (uint32_t)sizeof(s31_game_entry_t),
+        .count = (uint32_t)catalog->count,
+    };
+    bool ok = fwrite(&hdr, sizeof(hdr), 1, file) == 1;
+    if (ok && catalog->count > 0) {
+        ok = fwrite(catalog->entries, sizeof(s31_game_entry_t), catalog->count, file) == catalog->count;
+    }
+    if (fclose(file) != 0) ok = false;
+    if (!ok) {
+        remove(tmp_path);
+        return -1;
+    }
+    remove(cache_path);
+    if (rename(tmp_path, cache_path) != 0) {
+        remove(tmp_path);
+        return -1;
+    }
+    return 0;
 }
 
 static int entry_compare(const void *left, const void *right)

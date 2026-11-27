@@ -119,6 +119,12 @@ static void infones_free_runtime_buffers(void)
         Map185_Dummy_Chr_Rom = NULL;
     }
 #endif
+#if INFONES_ENABLE_MAPPER_252
+    if (Map252_Chr_Ram) {
+        nes_free(Map252_Chr_Ram);
+        Map252_Chr_Ram = NULL;
+    }
+#endif
     if (DRAM) {
         nes_free(DRAM);
         DRAM = NULL;

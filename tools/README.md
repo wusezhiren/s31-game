@@ -34,7 +34,7 @@ python -m pip install -i https://pypi.tuna.tsinghua.edu.cn/simple pyserial
 . /home/yjh/esp/esp-idf-master/export.sh
 idf.py --preview -B build-s31 -DIDF_TARGET=esp32s31 build
 idf.py --preview -B build-s31 -DIDF_TARGET=esp32s31 \
-  -p /dev/ttyUSB0 flash
+  -p /dev/ttyUSB0 -b 2000000 flash
 ```
 
 如果设备没有自动进入下载模式，按住 BOOT，点按 RESET，再释放 BOOT，然后重新执行烧录命令。烧录完成并复位后，等待设备进入游戏目录界面。

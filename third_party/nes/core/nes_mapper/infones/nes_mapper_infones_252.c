@@ -14,12 +14,25 @@
 /*                                                                   */
 /*===================================================================*/
 
+BYTE	*Map252_Chr_Ram;
 BYTE	Map252_Reg[9];
 BYTE	Map252_IRQ_Enable;
 BYTE	Map252_IRQ_Counter;
 BYTE	Map252_IRQ_Latch;
 BYTE	Map252_IRQ_Occur;
 int	Map252_IRQ_Clock;
+
+/* 外星科技 Mapper 252 规范：1KB CHR 页 6、7 映射到板载 2KB CHR-RAM（用于动态写入汉字字模），其余映射 CHR-ROM */
+static void Map252_Set_Chr_Bank(int slot)
+{
+  BYTE bank = Map252_Reg[slot];
+  if ((bank == 6 || bank == 7) && Map252_Chr_Ram) {
+    PPUBANK[slot] = Map252_Chr_Ram + ((DWORD)(bank - 6) * 0x400);
+  } else if (NesHeader.byVRomSize > 0) {
+    PPUBANK[slot] = VROMPAGE(bank % (NesHeader.byVRomSize << 3));
+  }
+  InfoNES_SetupChr();
+}
 
 /*-------------------------------------------------------------------*/
 /*  Initialize Mapper 252                                            */
@@ -56,6 +69,14 @@ void Map252_Init()
   /* Set SRAM Banks */
   SRAMBANK = SRAM;
 
+  /* 分配 2KB 独立 CHR-RAM（bank 6、7）并清零 */
+  if (!Map252_Chr_Ram) {
+    Map252_Chr_Ram = (BYTE *)nes_malloc(0x800);
+  }
+  if (Map252_Chr_Ram) {
+    InfoNES_MemorySet(Map252_Chr_Ram, 0, 0x800);
+  }
+
   /* Set Registers */
   for( int i = 0; i < 9; i++ ) {
     Map252_Reg[i] = i;
@@ -76,8 +97,7 @@ void Map252_Init()
   /* Set PPU Banks */
   if ( NesHeader.byVRomSize > 0 ) {
     for ( int nPage = 0; nPage < 8; ++nPage )
-      PPUBANK[ nPage ] = VROMPAGE( nPage );
-    InfoNES_SetupChr();
+      Map252_Set_Chr_Bank( nPage );
   }
 
   /* Set up wiring of the interrupt pin */
@@ -98,88 +118,91 @@ void Map252_Write( WORD wAddr, BYTE byData )
     return;
   }
   switch( wAddr & 0xF00C ) {
+  case 0x9000:
+  case 0x9004:
+    /* VRC4e 镜像模式控制寄存器 */
+    switch( byData & 0x03 ) {
+    case 0:
+      InfoNES_Mirroring( 1 );
+      break;
+    case 1:
+      InfoNES_Mirroring( 0 );
+      break;
+    case 2:
+      InfoNES_Mirroring( 3 );
+      break;
+    case 3:
+      InfoNES_Mirroring( 2 );
+      break;
+    }
+    break;
+
   case 0xB000:
     Map252_Reg[0] = (Map252_Reg[0] & 0xF0) | (byData & 0x0F);
-    PPUBANK[ 0 ] = VROMPAGE(Map252_Reg[0] % (NesHeader.byVRomSize<<3));
-    InfoNES_SetupChr();
+    Map252_Set_Chr_Bank( 0 );
     break;
   case 0xB004:
     Map252_Reg[0] = (Map252_Reg[0] & 0x0F) | ((byData & 0x0F) << 4);
-    PPUBANK[ 0 ] = VROMPAGE(Map252_Reg[0] % (NesHeader.byVRomSize<<3));
-    InfoNES_SetupChr();
+    Map252_Set_Chr_Bank( 0 );
     break;
   case 0xB008:
     Map252_Reg[1] = (Map252_Reg[1] & 0xF0) | (byData & 0x0F);
-    PPUBANK[ 1 ] = VROMPAGE(Map252_Reg[1] % (NesHeader.byVRomSize<<3));
-    InfoNES_SetupChr();
+    Map252_Set_Chr_Bank( 1 );
     break;
   case 0xB00C:
     Map252_Reg[1] = (Map252_Reg[1] & 0x0F) | ((byData & 0x0F) << 4);
-    PPUBANK[ 1 ] = VROMPAGE(Map252_Reg[1] % (NesHeader.byVRomSize<<3));
-    InfoNES_SetupChr();
+    Map252_Set_Chr_Bank( 1 );
     break;
 
   case 0xC000:
     Map252_Reg[2] = (Map252_Reg[2] & 0xF0) | (byData & 0x0F);
-    PPUBANK[ 2 ] = VROMPAGE(Map252_Reg[2] % (NesHeader.byVRomSize<<3));
-    InfoNES_SetupChr();
+    Map252_Set_Chr_Bank( 2 );
     break;
   case 0xC004:
     Map252_Reg[2] = (Map252_Reg[2] & 0x0F) | ((byData & 0x0F) << 4);
-    PPUBANK[ 2 ] = VROMPAGE(Map252_Reg[2] % (NesHeader.byVRomSize<<3));
-    InfoNES_SetupChr();
+    Map252_Set_Chr_Bank( 2 );
     break;
   case 0xC008:
     Map252_Reg[3] = (Map252_Reg[3] & 0xF0) | (byData & 0x0F);
-    PPUBANK[ 3 ] = VROMPAGE(Map252_Reg[3] % (NesHeader.byVRomSize<<3));
-    InfoNES_SetupChr();
+    Map252_Set_Chr_Bank( 3 );
     break;
   case 0xC00C:
     Map252_Reg[3] = (Map252_Reg[3] & 0x0F) | ((byData & 0x0F) << 4);
-    PPUBANK[ 3 ] = VROMPAGE(Map252_Reg[3] % (NesHeader.byVRomSize<<3));
-    InfoNES_SetupChr();
+    Map252_Set_Chr_Bank( 3 );
     break;
 
   case 0xD000:
     Map252_Reg[4] = (Map252_Reg[4] & 0xF0) | (byData & 0x0F);
-    PPUBANK[ 4 ] = VROMPAGE(Map252_Reg[4] % (NesHeader.byVRomSize<<3));
-    InfoNES_SetupChr();
+    Map252_Set_Chr_Bank( 4 );
     break;
   case 0xD004:
     Map252_Reg[4] = (Map252_Reg[4] & 0x0F) | ((byData & 0x0F) << 4);
-    PPUBANK[ 4 ] = VROMPAGE(Map252_Reg[4] % (NesHeader.byVRomSize<<3));
-    InfoNES_SetupChr();
+    Map252_Set_Chr_Bank( 4 );
     break;
   case 0xD008:
     Map252_Reg[5] = (Map252_Reg[5] & 0xF0) | (byData & 0x0F);
-    PPUBANK[ 5 ] = VROMPAGE(Map252_Reg[5] % (NesHeader.byVRomSize<<3));
-    InfoNES_SetupChr();
+    Map252_Set_Chr_Bank( 5 );
     break;
   case 0xD00C:
     Map252_Reg[5] = (Map252_Reg[5] & 0x0F) | ((byData & 0x0F) << 4);
-    PPUBANK[ 5 ] = VROMPAGE(Map252_Reg[5] % (NesHeader.byVRomSize<<3));
-    InfoNES_SetupChr();
+    Map252_Set_Chr_Bank( 5 );
     break;
 
   case 0xE000:
     Map252_Reg[6] = (Map252_Reg[6] & 0xF0) | (byData & 0x0F);
-    PPUBANK[ 6 ] = VROMPAGE(Map252_Reg[6] % (NesHeader.byVRomSize<<3));
-    InfoNES_SetupChr();
+    Map252_Set_Chr_Bank( 6 );
     break;
   case 0xE004:
     Map252_Reg[6] = (Map252_Reg[6] & 0x0F) | ((byData & 0x0F) << 4);
-    PPUBANK[ 6 ] = VROMPAGE(Map252_Reg[6] % (NesHeader.byVRomSize<<3));
-    InfoNES_SetupChr();
+    Map252_Set_Chr_Bank( 6 );
     break;
   case 0xE008:
     Map252_Reg[7] = (Map252_Reg[7] & 0xF0) | (byData & 0x0F);
-    PPUBANK[ 7 ] = VROMPAGE(Map252_Reg[7] % (NesHeader.byVRomSize<<3));
-    InfoNES_SetupChr();
+    Map252_Set_Chr_Bank( 7 );
     break;
   case 0xE00C:
     Map252_Reg[7] = (Map252_Reg[7] & 0x0F) | ((byData & 0x0F) << 4);
-    PPUBANK[ 7 ] = VROMPAGE(Map252_Reg[7] % (NesHeader.byVRomSize<<3));
-    InfoNES_SetupChr();
+    Map252_Set_Chr_Bank( 7 );
     break;
 
   case 0xF000:

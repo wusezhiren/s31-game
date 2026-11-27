@@ -176,6 +176,9 @@ extern BYTE (*s5b_wave_buffers)[APU_MAX_SAMPLES_PER_SYNC];
 #if INFONES_ENABLE_MAPPER_185
 extern BYTE *Map185_Dummy_Chr_Rom;
 #endif
+#if INFONES_ENABLE_MAPPER_252
+extern BYTE *Map252_Chr_Ram;
+#endif
 
 #if defined(__GNUC__)
 #pragma GCC diagnostic ignored "-Wunused-function"

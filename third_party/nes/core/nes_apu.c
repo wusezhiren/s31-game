@@ -271,17 +271,10 @@ static void nes_apu_play_pulse(nes_apu_t* apu,uint8_t pulse_id){
     uint8_t volume,enabled = (pulse_id==1)? apu->status_pulse1: apu->status_pulse2;
     const uint32_t sample_rate = apu->sample_rate;
     const uint16_t sample_per_sync = apu->sample_per_sync;
-    const uint32_t cpu_step_q16 = (uint32_t)(((uint64_t)NES_CPU_CLOCK_FREQ << 16) / sample_rate);
-
-    /* Pre-compute reciprocal of divisor to avoid per-sample 64-bit division.
-     * divisor = 16 * (cur_period + 1) */
-    const uint32_t divisor = 16U * ((uint32_t)pulse->cur_period + 1U);
-    const uint32_t inv_divisor_q32 = (divisor > 0U) ? (uint32_t)(0x100000000ULL / divisor) : 0U;
-
-    /* Compute initial cpu_local_diff = (sample_local_start * CPU_FREQ / SAMPLE_RATE) - cpu_lock_count
-     * Use 64-bit only once here outside the loop. */
-    uint32_t cpu_diff_q16 = (uint32_t)((((uint64_t)apu->sample_local_start * NES_CPU_CLOCK_FREQ / sample_rate) - apu->cpu_lock_count) << 16);
-    const uint32_t sample_end_mark = (uint32_t)((apu->clock_count + 1) * sample_rate / 240);
+    /* 使用 Q24 连续相位累加器，避免每 1/240s 分段重算导致的相位跳变滋滋声 */
+    const uint64_t denom = (uint64_t)16U * ((uint64_t)pulse->cur_period + 1ULL) * (uint64_t)sample_rate;
+    const uint32_t phase_step = (denom > 0ULL) ? (uint32_t)((((uint64_t)NES_CPU_CLOCK_FREQ) << 24) / denom) : 0U;
+    uint32_t phase = pulse->seq_local_old & 0x00FFFFFFU;
 
     for (uint32_t sample_local = (uint32_t)apu->sample_local_start; sample_local <= (uint32_t)apu->sample_local_end; sample_local++){
         uint8_t mute = 0;
@@ -289,18 +282,12 @@ static void nes_apu_play_pulse(nes_apu_t* apu,uint8_t pulse_id){
             break;
         }
         if ((!enabled) || (pulse->length_counter == 0)){
-            mute = 1;
             pulse->sample_buffer[pulse->sample_index++] = 0;
-            pulse->seq_local_old = 0;
-            cpu_diff_q16 += cpu_step_q16;
             continue;
-        }else if (pulse->cur_period <= 7 || pulse->cur_period >= 0x800)
+        }else if (pulse->cur_period <= 7 || pulse->cur_period >= 0x800 ||
+                  (!pulse->negate && (pulse->cur_period + (pulse->cur_period >> pulse->shift)) >= 0x800)){
             mute = 1;
-        /* seq_diff_q16 = (cpu_diff >> 16 << 16) / divisor = cpu_diff / divisor (keeping Q16)
-         * ≈ ((cpu_diff >> 16) * inv_divisor_q32) >> 16 */
-        const uint32_t cpu_local_diff = cpu_diff_q16 >> 16;
-        const uint32_t seq_diff_q16 = (uint32_t)(((uint64_t)cpu_local_diff * inv_divisor_q32) >> 16);
-        const uint32_t seq_local_q16 = (seq_diff_q16 + pulse->seq_local_old) & 0xFFFFU;
+        }
         if (mute){
             volume = 0;
         }else if (pulse->constant_volume){
@@ -308,13 +295,11 @@ static void nes_apu_play_pulse(nes_apu_t* apu,uint8_t pulse_id){
         }else{
             volume = pulse->envelope_volume;
         }
-        uint8_t wave_idx = (uint8_t)((seq_local_q16 >> 13) & 7U);
+        uint8_t wave_idx = (uint8_t)((phase >> 21) & 7U);
         pulse->sample_buffer[pulse->sample_index++] = apu_pulse_wave[pulse->duty][wave_idx] * volume;
-        if (sample_local == sample_end_mark){
-            pulse->seq_local_old = seq_local_q16;
-        }
-        cpu_diff_q16 += cpu_step_q16;
+        phase = (phase + phase_step) & 0x00FFFFFFU;
     }
+    pulse->seq_local_old = phase;
 }
 
 // https://www.nesdev.org/wiki/APU_Triangle
@@ -322,34 +307,24 @@ static void nes_apu_play_triangle(nes_apu_t* apu){
     triangle_t* triangle = &apu->triangle;
     const uint32_t sample_rate = apu->sample_rate;
     const uint16_t sample_per_sync = apu->sample_per_sync;
-    const uint32_t cpu_step_q16 = (uint32_t)(((uint64_t)NES_CPU_CLOCK_FREQ << 16) / sample_rate);
-
-    const uint32_t divisor = 16U * ((uint32_t)triangle->cur_period + 1U);
-    const uint32_t inv_divisor_q32 = (divisor > 0U) ? (uint32_t)(0x100000000ULL / divisor) : 0U;
-    uint32_t cpu_diff_q16 = (uint32_t)((((uint64_t)apu->sample_local_start * NES_CPU_CLOCK_FREQ / sample_rate) - apu->cpu_lock_count) << 16);
-    const uint32_t sample_end_mark = (uint32_t)((apu->clock_count + 1) * sample_rate / 240);
+    /* 三角波周期为 32*(period+1) CPU 周期；使用连续相位并在静音/超声时保持电平消除咔哒声 */
+    const uint64_t denom = (uint64_t)32U * ((uint64_t)triangle->cur_period + 1ULL) * (uint64_t)sample_rate;
+    const uint32_t phase_step = (denom > 0ULL) ? (uint32_t)((((uint64_t)NES_CPU_CLOCK_FREQ) << 24) / denom) : 0U;
+    uint32_t phase = triangle->seq_local_old & 0x00FFFFFFU;
+    const uint8_t active = (apu->status_triangle && triangle->length_counter > 0 &&
+                            triangle->linear_counter > 0 && triangle->cur_period >= 2U) ? 1U : 0U;
 
     for (uint32_t sample_local = (uint32_t)apu->sample_local_start; sample_local <= (uint32_t)apu->sample_local_end; sample_local++){
         if (triangle->sample_index >= sample_per_sync){
             break;
         }
-        if ((!apu->status_triangle) || (triangle->length_counter == 0) || (triangle->linear_counter == 0)){
-            triangle->sample_buffer[triangle->sample_index++] = 0;
-            triangle->seq_local_old = 0;
-            cpu_diff_q16 += cpu_step_q16;
-            continue;
+        uint8_t wave_idx = (uint8_t)((phase >> 19) & 31U);
+        triangle->sample_buffer[triangle->sample_index++] = apu_triangle_wave[wave_idx];
+        if (active){
+            phase = (phase + phase_step) & 0x00FFFFFFU;
         }
-        const uint32_t cpu_local_diff = cpu_diff_q16 >> 16;
-        const uint32_t seq_diff_q16 = (uint32_t)(((uint64_t)cpu_local_diff * inv_divisor_q32) >> 16);
-        const uint32_t seq_local_q16 = (seq_diff_q16 + triangle->seq_local_old) & 0xFFFFU;
-        uint8_t wave_idx = (uint8_t)((seq_local_q16 >> 11) & 31U);
-        uint8_t volume = apu_triangle_wave[wave_idx];
-        triangle->sample_buffer[triangle->sample_index++] = volume;
-        if (sample_local == sample_end_mark){
-            triangle->seq_local_old = seq_local_q16;
-        }
-        cpu_diff_q16 += cpu_step_q16;
     }
+    triangle->seq_local_old = phase;
 }
 
 // https://www.nesdev.org/wiki/APU_Noise
@@ -601,6 +576,7 @@ void nes_write_apu_register(nes_t* nes,uint16_t address,uint8_t data){
             break;
         case 0x4006:
             nes->nes_apu.pulse2.timer_low=data;
+            nes->nes_apu.pulse2.cur_period=nes->nes_apu.pulse2.timer_high<<8|nes->nes_apu.pulse2.timer_low;
             break;
         case 0x4007:
             nes->nes_apu.pulse2.control3=data;

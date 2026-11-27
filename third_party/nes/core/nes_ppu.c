@@ -39,7 +39,28 @@ static inline void nes_write_ppu_memory(nes_t* nes,uint8_t data){
         nes->nes_mapper.mapper_ppu(nes, address);
     }
     if (address < (uint16_t)0x3F00) {// BANK
-        nes->nes_ppu.chr_banks[(uint8_t)(address >> 10)][(uint16_t)(address & (uint16_t)0x3FF)] = data;
+        const uint8_t bank = (uint8_t)(address >> 10);
+        const uint16_t offset = (uint16_t)(address & (uint16_t)0x3FF);
+        uint8_t *dst = nes->nes_ppu.chr_banks[bank];
+        if (!dst) {
+            return;
+        }
+        if (address < (uint16_t)0x2000 && nes->nes_rom.chr_rom_size > 0 && nes->nes_rom.chr_rom) {
+            /* 保护只读 CHR-ROM 不被 PPU 写操作破坏；独立 CHR-RAM 位于 chr_rom 范围外可正常写入 */
+            const uintptr_t chr_start = (uintptr_t)nes->nes_rom.chr_rom;
+            const uintptr_t chr_end = chr_start + (uintptr_t)nes->nes_rom.chr_rom_size * CHR_ROM_UNIT_SIZE;
+            const uintptr_t bank_addr = (uintptr_t)dst;
+            if (bank_addr >= chr_start && bank_addr < chr_end &&
+                nes->nes_rom.mapper_number != 74 && nes->nes_rom.mapper_number != 77) {
+                return;
+            }
+        }
+        dst[offset] = data;
+#if CONFIG_NES_FAST_PPU_PACKED_PATTERN
+        if (address < (uint16_t)0x2000) {
+            nes_chr_packed_invalidate_bank(nes, bank, offset);
+        }
+#endif
     } else {// 调色板
         if ((uint8_t)address & 0x03) {
             nes->nes_ppu.palette_indexes[(uint8_t)address & 0x1f] = data & 0x3F;

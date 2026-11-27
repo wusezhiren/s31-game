@@ -91,6 +91,7 @@ void nes_chr_packed_cache_free(nes_t* nes);
 #if CONFIG_NES_FAST_PPU_PACKED_PATTERN
 const uint16_t* nes_chr_packed_mapper_bank(nes_t* nes, uint8_t bank);
 uint16_t nes_chr_packed_mapper_row(nes_t* nes, uint8_t bank, const uint8_t* row_ptr);
+void nes_chr_packed_invalidate_bank(nes_t* nes, uint8_t bank, uint16_t offset);
 #endif
 
 #ifdef __cplusplus          

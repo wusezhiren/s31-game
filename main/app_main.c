@@ -41,6 +41,7 @@ static char serial_command_name[96];
 static char serial_command_action[8];
 static volatile app_mode_t mode = APP_CATALOG;
 static int start_selected_game(void);
+static void refresh_catalog(const char *status);
 static portMUX_TYPE touch_lock = portMUX_INITIALIZER_UNLOCKED;
 static struct {
     int32_t x0, y0, x, y;
@@ -104,7 +105,7 @@ static void handle_touch(void)
         return;
     }
     if (s31_serial_upload_active()) return;
-    if (dragging || (abs(dy) >= 34 && abs(dy) > abs(dx))) {
+    if (dragging || (abs(dy) >= 24 && abs(dy) > abs(dx))) {
         dragging = true;
         int first = (int)drag_first - dy / 34;
         int max_first = catalog.count > 10 ? (int)catalog.count - 10 : 0;
@@ -112,21 +113,36 @@ static void handle_touch(void)
         if (first > max_first) first = max_first;
         if (catalog_first != (size_t)first) {
             catalog_first = (size_t)first;
+            /* 拖动滚动时同步保持选中项位于当前可视范围内，避免状态错位 */
+            if (selected < catalog_first) selected = catalog_first;
+            else if (catalog.count && selected >= catalog_first + 10) {
+                size_t last_visible = catalog_first + 9;
+                selected = last_visible < catalog.count ? last_visible : catalog.count - 1;
+            }
             show_catalog(NULL);
         }
         return;
     }
     if (sample.down) return;
     if (abs(dx) >= 40 && abs(dx) > abs(dy)) {
-        selected = catalog_first = s31_game_catalog_page_move(catalog_first, catalog.count, dx < 0 ? -1 : 1);
-        ESP_LOGI(TAG, "touch page=%u selected=%u", (unsigned)(selected / 10 + 1), (unsigned)(selected + 1));
-        show_catalog(NULL);
+        /* 触摸翻页严格钳位在首末页之间，到头停住不循环回绕 */
+        size_t max_first = catalog.count > 10 ? catalog.count - 10 : 0;
+        int next_first = (int)catalog_first + (dx < 0 ? -10 : 10);
+        if (next_first < 0) next_first = 0;
+        if (next_first > (int)max_first) next_first = (int)max_first;
+        if ((size_t)next_first != catalog_first || selected != (size_t)next_first) {
+            selected = catalog_first = (size_t)next_first;
+            ESP_LOGI(TAG, "touch page=%u selected=%u", (unsigned)(selected / 10 + 1), (unsigned)(selected + 1));
+            show_catalog(NULL);
+        }
     } else if (abs(dx) < 12 && abs(dy) < 12 && sample.x0 >= 24 && sample.x0 < 776 &&
                sample.y0 >= 82 && sample.y0 < 422 && (sample.y0 - 82) % 34 < 30) {
         size_t row = (size_t)((sample.y0 - 82) / 34);
         if (catalog_first + row < catalog.count) {
             selected = catalog_first + row;
-            if (start_selected_game()) show_catalog("unsupported or load failed");
+            int result = start_selected_game();
+            if (result == -3) refresh_catalog("rescan");
+            else if (result) show_catalog("unsupported or load failed");
         }
     }
 }
@@ -263,17 +279,36 @@ static void pce_task(void *arg)
     vTaskDelete(NULL);
 }
 
-static void refresh_catalog(const char *status)
+static const char *CATALOG_CACHE_PATH = "/sdcard/roms/.s31-catalog.bin";
+
+static void refresh_catalog_opts(const char *status, bool use_cache)
 {
-    int count = s31_game_catalog_scan(s31_board_rom_root(), &catalog);
+    int64_t t0 = esp_timer_get_time();
+    bool from_cache = false;
+    int count = -1;
+    if (use_cache) {
+        count = s31_game_catalog_load_cache(CATALOG_CACHE_PATH, &catalog);
+        if (count > 0) from_cache = true;
+    }
+    if (!from_cache) {
+        count = s31_game_catalog_scan(s31_board_rom_root(), &catalog);
+        if (count > 0) s31_game_catalog_save_cache(CATALOG_CACHE_PATH, &catalog);
+    }
     size_t supported = 0;
     for (size_t i = 0; i < catalog.count; ++i) supported += catalog.entries[i].supported ? 1u : 0u;
     if (selected >= catalog.count) selected = catalog.count ? catalog.count - 1 : 0;
-    ESP_LOGI(TAG, "game catalog: %d entries, %u supported, %u unsupported", count,
-             (unsigned)supported, (unsigned)(catalog.count - supported));
+    int64_t elapsed_ms = (esp_timer_get_time() - t0) / 1000;
+    ESP_LOGI(TAG, "game catalog: %d entries, %u supported, %u unsupported (%s in %lld ms)", count,
+             (unsigned)supported, (unsigned)(catalog.count - supported),
+             from_cache ? "cache" : "scan", (long long)elapsed_ms);
     if (selected < catalog_first || selected >= catalog_first + 10)
         catalog_first = selected / 10 * 10;
     show_catalog(status);
+}
+
+static void refresh_catalog(const char *status)
+{
+    refresh_catalog_opts(status, false);
 }
 
 static int start_selected_game(void)
@@ -360,21 +395,22 @@ static void stop_game(void)
     active_core = CORE_NONE;
     active_save_path[0] = 0;
     mode = APP_CATALOG;
-    refresh_catalog("saved");
+    show_catalog("saved");
 }
 
 void app_main(void)
 {
     s31_video_t video = {0};
     ESP_ERROR_CHECK(s31_board_init(&video));
-    ESP_ERROR_CHECK(s31_board_start_input(on_key, NULL));
+    /* 开机优先从缓存秒读并渲染游戏目录，让首屏立即可见，随后初始化外设输入 */
+    refresh_catalog_opts(NULL, true);
     s31_board_set_touch_callback(on_touch, NULL);
+    ESP_ERROR_CHECK(s31_board_start_input(on_key, NULL));
     ESP_ERROR_CHECK(s31_serial_upload_start(serial_upload_allowed, serial_upload_complete,
                                              serial_command_received, NULL));
     s31_gamepad_set_callback(on_gamepad, NULL);
     if (s31_bt_gamepad_init() != ESP_OK) ESP_LOGW(TAG, "Bluetooth gamepad unavailable");
     if (s31_usb_gamepad_init() != ESP_OK) ESP_LOGW(TAG, "USB gamepad unavailable");
-    refresh_catalog(NULL);
     s31_buttons_t previous = 0;
     for (;;) {
         handle_touch();
@@ -383,17 +419,47 @@ void app_main(void)
             if (!strcmp(serial_command_action, "STOP")) {
                 if (mode == APP_CATALOG) s31_serial_reply("STOP OK");
                 else { stop_game(); s31_serial_reply("STOP OK"); }
+            } else if (!strcmp(serial_command_action, "LIST")) {
+                unsigned page = 1;
+                if (serial_command_name[0]) {
+                    unsigned parsed = (unsigned)strtoul(serial_command_name, NULL, 10);
+                    if (parsed > 0) page = parsed;
+                }
+                size_t start = (size_t)(page - 1u) * 10u;
+                for (size_t i = start; i < catalog.count && i < start + 10u; ++i) {
+                    const s31_game_entry_t *e = &catalog.entries[i];
+                    ESP_LOGI(TAG, "catalog[%u] %s mapper=%u ok=%u size=%u %s",
+                             (unsigned)i, s31_game_platform_name(e->platform),
+                             (unsigned)e->mapper, (unsigned)e->supported,
+                             (unsigned)e->size, e->title);
+                }
+                s31_serial_reply("LIST OK");
             } else if (!strcmp(serial_command_action, "RUN")) {
                 if (mode != APP_CATALOG || s31_serial_upload_active()) {
                     s31_serial_reply("RUN ERR BUSY");
                 } else {
-                    refresh_catalog(NULL);
                     size_t match = catalog.count;
-                    for (size_t i = 0; i < catalog.count; ++i) {
-                        const char *name = strrchr(catalog.entries[i].path, '/');
-                        if (!strcmp(name ? name + 1 : catalog.entries[i].path, serial_command_name)) {
-                            match = i;
-                            break;
+                    if (serial_command_name[0] == '#') {
+                        unsigned long idx = strtoul(serial_command_name + 1, NULL, 10);
+                        if (idx < catalog.count) match = (size_t)idx;
+                    } else {
+                        for (size_t i = 0; i < catalog.count; ++i) {
+                            const char *name = strrchr(catalog.entries[i].path, '/');
+                            if (!strcmp(name ? name + 1 : catalog.entries[i].path, serial_command_name)) {
+                                match = i;
+                                break;
+                            }
+                        }
+                        if (match == catalog.count) {
+                            /* 缓存未命中时再触发全盘重扫，避免每次串口启动都重扫 3 秒 */
+                            refresh_catalog(NULL);
+                            for (size_t i = 0; i < catalog.count; ++i) {
+                                const char *name = strrchr(catalog.entries[i].path, '/');
+                                if (!strcmp(name ? name + 1 : catalog.entries[i].path, serial_command_name)) {
+                                    match = i;
+                                    break;
+                                }
+                            }
                         }
                     }
                     if (match == catalog.count) {
@@ -458,7 +524,12 @@ void app_main(void)
             }
             if (pressed & S31_BUTTON_A) {
                 int result = start_selected_game();
-                if (result) show_catalog("unsupported or load failed");
+                if (result == -3) {
+                    /* 若缓存中的文件已被移除或变动，自动重扫刷新目录 */
+                    refresh_catalog("rescan");
+                } else if (result) {
+                    show_catalog("unsupported or load failed");
+                }
             }
             if (pressed & S31_BUTTON_B) refresh_catalog("refreshed");
         } else if (active_nes || active_gb || active_sms || active_pce) {

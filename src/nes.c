@@ -22,19 +22,36 @@ extern int64_t s31_nes_prof_cpu_us, s31_nes_prof_bg_us, s31_nes_prof_spr_us, s31
 static bool pcm_logged;
 static int16_t *pcm_stereo;
 static int16_t *pcm_mono;
+static int32_t audio_hp_prev_in;
+static int32_t audio_hp_prev_out;
+static int32_t audio_lp1_state;
+static int32_t audio_lp2_state;
+static uint32_t audio_fade_in;
 
 int nes_audio_reference_path_enabled(void) { return 0; }
 
 int nes_sound_output_s16(const int16_t *buffer, size_t len)
 {
-    static int32_t dc;
     if (!pcm_stereo || len > NES_APU_SAMPLE_PER_SYNC_MAX) return -1;
     bool nonzero = false;
     for (size_t i = 0; i < len; ++i) {
-        int32_t sample = buffer[i];
-        dc += (sample * 256 - dc) / 256;
-        pcm_stereo[2 * i] = pcm_stereo[2 * i + 1] = (int16_t)(sample - dc / 256);
-        nonzero |= pcm_stereo[2 * i] != 0;
+        /* 提升数字域动态范围（2x）以降低硬件功放高增益底噪 */
+        int32_t sample = (int32_t)buffer[i] * 2;
+        /* 一阶高通去直流（约 37Hz）+ 二阶级联低通（约 7.5kHz）大幅压制高频混叠滋滋声 */
+        int32_t hp = sample - audio_hp_prev_in + ((audio_hp_prev_out * 254) >> 8);
+        audio_hp_prev_in = sample;
+        audio_hp_prev_out = hp;
+        audio_lp1_state += ((hp - audio_lp1_state) * 3) >> 3;
+        audio_lp2_state += ((audio_lp1_state - audio_lp2_state) * 3) >> 3;
+        int32_t out = audio_lp2_state;
+        if (audio_fade_in < 256u) {
+            out = (out * (int32_t)audio_fade_in) >> 8;
+            ++audio_fade_in;
+        }
+        if (out > 30000) out = 30000;
+        else if (out < -30000) out = -30000;
+        pcm_stereo[2 * i] = pcm_stereo[2 * i + 1] = (int16_t)out;
+        nonzero |= out != 0;
     }
     int64_t start = esp_timer_get_time();
     int result = s31_board_audio_write(pcm_stereo, len * 2 * sizeof(*pcm_stereo));
@@ -140,6 +157,13 @@ int s31_nes_load_rom(s31_nes_t *nes, const uint8_t *data, size_t size) {
         free(nes->rom); nes->rom = NULL; nes->rom_size = 0; return -1;
     }
     nes->loaded = true;
+    printf("NES ROM: mapper=%u prg=%u*16KB chr=%u*8KB mir=%u four=%u sram=%u\n",
+           (unsigned)nes->core->nes_rom.mapper_number,
+           (unsigned)nes->core->nes_rom.prg_rom_size,
+           (unsigned)nes->core->nes_rom.chr_rom_size,
+           (unsigned)nes->core->nes_rom.mirroring_type,
+           (unsigned)nes->core->nes_rom.four_screen,
+           (unsigned)nes->core->nes_rom.save_ram);
     return 0;
 }
 
@@ -215,6 +239,11 @@ void s31_nes_run(s31_nes_t *nes) {
     s31_nes_prof_cpu_us = s31_nes_prof_bg_us = s31_nes_prof_spr_us = s31_nes_prof_apu_us = 0;
     printf("NES mem: core=%p draw=%p stack=%p\n", (void *)nes->core, (void *)nes->core->nes_draw_data, (void *)&nes);
     pcm_logged = false;
+    audio_hp_prev_in = 0;
+    audio_hp_prev_out = 0;
+    audio_lp1_state = 0;
+    audio_lp2_state = 0;
+    audio_fade_in = 0;
     pcm_stereo = heap_caps_malloc(NES_APU_SAMPLE_PER_SYNC_MAX * 3 * sizeof(*pcm_stereo),
                                   MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
     pcm_mono = pcm_stereo ? pcm_stereo + NES_APU_SAMPLE_PER_SYNC_MAX * 2 : NULL;

@@ -123,8 +123,15 @@ static void upload_task(void *argument)
         if (length <= 0) continue;
         if (!strncmp(line, "S31RUN ", 7)) {
             const char *filename = line + 7;
-            if (!valid_filename(filename)) s31_serial_reply("RUN ERR HEADER");
+            /* 允许通过 #<index> 按目录索引启动含中文或空格的文件名 */
+            bool index_arg = (filename[0] == '#' && isdigit((unsigned char)filename[1]));
+            if (!index_arg && !valid_filename(filename)) s31_serial_reply("RUN ERR HEADER");
             else if (serial_command) serial_command("RUN", filename, upload_context);
+            continue;
+        }
+        if (!strncmp(line, "S31LIST", 7)) {
+            const char *arg = line[7] == ' ' ? line + 8 : "";
+            if (serial_command) serial_command("LIST", arg, upload_context);
             continue;
         }
         if (!strcmp(line, "S31STOP")) {

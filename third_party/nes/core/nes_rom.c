@@ -183,6 +183,32 @@ uint16_t nes_chr_packed_mapper_row(nes_t* nes, uint8_t bank, const uint8_t* row_
     const uint8_t row = (uint8_t)(offset & 0x07U);
     return packed_bank[(tile << 3) + row];
 }
+
+void nes_chr_packed_invalidate_bank(nes_t* nes, uint8_t bank, uint16_t offset)
+{
+    if (!nes || bank >= 8U) {
+        return;
+    }
+    /* 当游戏动态写入 CHR 槽位时失效该 bank 的打包缓存，避免渲染旧图块 */
+    g_nes_chr_packed_bank_base[bank] = NULL;
+    g_nes_chr_packed_bank_rows[bank] = NULL;
+
+    const uint8_t* bank_base = nes->nes_ppu.pattern_table[bank];
+    if (nes->nes_chr_packed_rows && nes->nes_rom.chr_rom && bank_base) {
+        const uintptr_t chr_start = (uintptr_t)nes->nes_rom.chr_rom;
+        const uintptr_t chr_end = chr_start + (uintptr_t)nes->nes_rom.chr_rom_size * CHR_ROM_UNIT_SIZE;
+        const uintptr_t base = (uintptr_t)bank_base;
+        if (base >= chr_start && base + 0x400U <= chr_end) {
+            const uint32_t tile_offset = (uint32_t)(base - chr_start) + (uint32_t)(offset & 0x03f0U);
+            const uint8_t row = (uint8_t)(offset & 0x07U);
+            const uint32_t packed_index = ((tile_offset >> 4) << 3) + row;
+            if (packed_index < nes->nes_chr_packed_row_count) {
+                const uint8_t* tile_base = nes->nes_rom.chr_rom + tile_offset;
+                nes->nes_chr_packed_rows[packed_index] = nes_chr_pack_pattern_row(tile_base[row], tile_base[row + 8U]);
+            }
+        }
+    }
+}
 #endif
 
 #if (NES_USE_FS == 1)
